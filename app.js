@@ -1,8 +1,12 @@
 /**
- * CIRA Web 交互原型 — 主控制器  (v0.5)
+ * CIRA Web 交互原型 — 主控制器  (v0.6)
  *
  * 职责:
- *   - 状态机 (Idle / Listening / Thinking / Speaking / Settings / Offline)
+ *   - 状态机 (Idle / Listening / Thinking / Speaking / Settings / Offline / Sleep)
+ *   - 唤醒 (统一入口 wake): 触摸或唤醒词触发; 优先级最高, 可打断 SPEAKING
+ *       · 播放本地应答 "我在。"/"哎！" (vivi2.0 预录, 缺失则 TTS 兜底) — 不进大模型
+ *       · 之后进入 LISTENING 正式接收语音 → 送云端模型
+ *   - 无动作/交互 10s 自动熄屏 SLEEP 省电; 被点击或唤醒时亮屏
  *   - 触摸交互 (点按唤醒, 长按 1.2s 进 Settings)
  *   - 语音唤醒 (唤醒方式之二): "你好，cira" / "你好，西拉" 唤醒词, 待机时被动聆听
  *   - Settings 多视图导航 (home / wifi / wifi-pwd / wifi-detail /
@@ -57,17 +61,17 @@
     speaking: '#FF8A3D', offline: '#FF9EB5', settings: '#FFFFFF', sleep: '#000000',
   };
 
-  // ---- SLEEP 超时参数 (ms) — 详见 HANDOFF.md §8 待确认项 ----
+  // ---- SLEEP 超时参数 (ms) — 无动作/交互 10s 自动熄屏省电 (v0.6 产品决定) ----
   const SLEEP_TIMEOUTS = {
-    fromIdle:     30000,    // IDLE 空闲 30s → SLEEP
-    fromListening: 60000,    // LISTENING ASR 超时 60s → SLEEP (原型对话很快, 实际触发由产品定)
-    fromThinking:  15000,    // THINKING 模型超时 15s → SLEEP
-    fromSpeaking:  30000,    // SPEAKING 结束后 30s → SLEEP (经 IDLE 两级)
+    fromIdle:      10000,    // IDLE 空闲 10s → SLEEP
+    fromListening: 10000,    // LISTENING 静默(无语音输入) 10s → SLEEP
+    fromThinking:  15000,    // THINKING 模型思考超时 15s → SLEEP (防模型卡死)
+    fromSpeaking:  10000,    // (预留) SPEAKING 兜底, 正常由 IDLE 路径接管
   };
   let sleepTimer = null;
   function clearSleepTimer() { if (sleepTimer) { clearTimeout(sleepTimer); sleepTimer = null; } }
   function armSleepTimer(ms) { clearSleepTimer(); sleepTimer = setTimeout(() => {
-    if (currentState === STATES.IDLE) transition(STATES.SLEEP);
+    transition(STATES.SLEEP);
   }, ms); }
 
   function transition(next, opts = {}) {
@@ -113,12 +117,16 @@
       subtitle.classList.remove('show', 'listening');
     }
 
-    // 回到 IDLE: 允许下一次语音唤醒再次触发 + 启动 SLEEP 计时器
+    // 各状态进入时启动对应 SLEEP 计时器 (无动作/交互则熄屏省电)
     if (next === STATES.IDLE) {
       vwWoke = false;
       armSleepTimer(SLEEP_TIMEOUTS.fromIdle);
+    } else if (next === STATES.LISTENING) {
+      armSleepTimer(SLEEP_TIMEOUTS.fromListening);
+    } else if (next === STATES.THINKING) {
+      armSleepTimer(SLEEP_TIMEOUTS.fromThinking);
     }
-    // SPEAKING 结束会由 speakScript 切回 IDLE, 此时由 IDLE 路径启动 SLEEP 计时器
+    // SPEAKING 为活跃输出, 不挂 SLEEP 计时; 结束后由 IDLE 路径接管
 
     // 语音唤醒: IDLE + SLEEP 时都允许被动聆听 (SLEEP 时跳 IDLE 直入 LISTENING)
     syncVoiceWake();
@@ -583,13 +591,15 @@
   // ============================================================
   let pressTimer = null;
   let pressed = false;
+  let longPressed = false;
   const LONG_PRESS_MS = 1200;
 
   canvas.addEventListener('pointerdown', (e) => {
     pressed = true;
+    longPressed = false;
     try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
     pressTimer = setTimeout(() => {
-      if (pressed) transition(STATES.SETTINGS);
+      if (pressed) { longPressed = true; transition(STATES.SETTINGS); }
     }, LONG_PRESS_MS);
   });
 
@@ -598,13 +608,16 @@
     pressed = false;
     clearTimeout(pressTimer);
     pressTimer = null;
-    if (currentState === STATES.IDLE) startConversation();
-    else if (currentState === STATES.OFFLINE) transition(STATES.IDLE);
-    else if (currentState === STATES.SLEEP) transition(STATES.IDLE);   // 触摸唤醒: 任意触摸 → IDLE, 不直接进 LISTENING
+    if (longPressed) return;                              // 长按已进入设置, 不再唤醒
+    if (currentState === STATES.OFFLINE) { transition(STATES.IDLE); return; }
+    // 任何可交互态(含 IDLE/SLEEP/LISTENING/THINKING/SPEAKING)触摸 → 唤醒:
+    // 播放本地应答(我在。/哎！) → 进入 LISTENING 接收语音 → 送云端模型
+    wake('touch');
   });
 
   canvas.addEventListener('pointercancel', () => {
     pressed = false;
+    longPressed = false;
     clearTimeout(pressTimer);
     pressTimer = null;
   });
@@ -612,7 +625,68 @@
   canvas.addEventListener('contextmenu', e => e.preventDefault());
 
   // ============================================================
+  //  唤醒 (统一入口) — 优先级最高
+  //  - 任何活跃态(含 SPEAKING 播报中)被触摸/唤醒词触发, 立即打断当前输出
+  //  - 播放本地应答 "我在。"/"哎！" (vivi2.0 预录 assets/wake_wo.mp3|wake_ai.mp3;
+  //    缺失则用 Web Speech TTS 兜底) — 此应答不进大模型
+  //  - 应答播完后进入 LISTENING 正式接收语音, 之后才送云端模型
+  // ============================================================
+  function stopAllOutput() {
+    try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch (_) {}
+    if (conversationTimer) { clearTimeout(conversationTimer); conversationTimer = null; }
+    if (audioLevelAnim) { cancelAnimationFrame(audioLevelAnim); audioLevelAnim = null; }
+    lf.setAudioLevel(0);
+    lf.setTtsProgress(0);
+    subtitle.classList.remove('show', 'listening');
+  }
+
+  function ttsSpeak(text) {
+    try {
+      const s = window.speechSynthesis;
+      if (!s) return;
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = 'zh-CN'; u.rate = 1.0; u.pitch = 1.12; u.volume = 1.0;
+      s.cancel(); s.speak(u);
+    } catch (_) {}
+  }
+
+  // 播放本地唤醒应答; 返回所用应答词(供字幕展示)
+  function playWakeResponse() {
+    stopAllOutput();                         // 先打断一切进行中的输出(含模型回复)
+    const opts = ['我在。', '哎！'];
+    const phrase = opts[Math.floor(Math.random() * opts.length)];
+    const file = phrase === '我在。' ? 'assets/wake_wo.mp3' : 'assets/wake_ai.mp3';
+    const audio = new Audio(file);
+    let fell = false;
+    const fallback = () => { if (!fell) { fell = true; ttsSpeak(phrase); } };
+    audio.addEventListener('error', fallback);
+    const p = audio.play();
+    if (p && p.catch) p.catch(fallback);
+    return phrase;
+  }
+
+  function estimateAckMs(phrase) {
+    return phrase.length * 300 + 500;        // 估算本地应答时长, 之后转 LISTENING
+  }
+
+  function wake(reason) {
+    if (currentState === STATES.SETTINGS || currentState === STATES.OFFLINE) return;
+    vwWoke = true;                           // 防同一次唤醒词尾音重复触发
+    const phrase = playWakeResponse();       // 本地应答(不进大模型)
+    transition(STATES.LISTENING, { emotion: 'curious' });
+    subtitle.classList.add('listening', 'show');
+    subtitle.textContent = phrase;           // 视觉呈现应答
+    const ackMs = estimateAckMs(phrase);
+    setTimeout(() => {
+      // 应答结束后正式接收语音 → 送云端模型 (非 SLEEP 才继续, 避免期间被熄屏打断)
+      if (currentState === STATES.LISTENING) beginListen();
+    }, ackMs);
+  }
+
+  // ============================================================
   //  模拟对话流  (Listening → Thinking → Speaking → Idle)
+  //  - 原型用脚本模拟 "用户语音 → 云端模型 → TTS 播报"; 生产环境把 beginListen 的
+  //    ASR 文本 / 音频 发往云端模型, 把返回文本做 TTS, 行为完全一致
   // ============================================================
   let conversationTimer = null;
   let audioLevelAnim = null;
@@ -625,7 +699,8 @@
     '天上的星星为什么会眨眼睛呢',
   ];
 
-  function startConversation(customText) {
+  function beginListen(customText) {
+    vwWoke = false;            // 新一轮接收, 允许再次语音唤醒打断
     if (conversationTimer) clearTimeout(conversationTimer);
     transition(STATES.LISTENING);
 
@@ -714,7 +789,7 @@
   document.getElementById('btn-talk').addEventListener('click', () => {
     if (currentState === STATES.SETTINGS || currentState === STATES.OFFLINE) return;
     const text = document.getElementById('script-text').value.trim();
-    startConversation(text);
+    beginListen(text);
   });
 
   document.getElementById('btn-mute').addEventListener('click', () => setVolume(0));
@@ -748,12 +823,8 @@
 
   const btnWake = document.getElementById('btn-wake');
   if (btnWake) {
-    btnWake.addEventListener('click', () => {
-      const back = currentState;
-      lf.setState('wake');
-      lf.pulse();
-      setTimeout(() => lf.setState(back), 900);
-    });
+    // 演示唤醒(含本地应答 + 进入接收); 也可用来演示 "播报中打断"
+    btnWake.addEventListener('click', () => wake('button'));
   }
 
   // ============================================================
@@ -789,29 +860,24 @@
     vwRecognition.interimResults = true;
 
     vwRecognition.onresult = (ev) => {
-      if (!voiceWakeOn || vwWoke) return;
-      if (currentState !== STATES.IDLE && currentState !== STATES.SLEEP) return;
+      if (!voiceWakeOn) return;
+      if (currentState === STATES.SETTINGS || currentState === STATES.OFFLINE) return;
       for (let i = ev.resultIndex; i < ev.results.length; i++) {
         const txt = (ev.results[i][0].transcript || '').toLowerCase();
         if (VW_KEYWORDS.some(k => txt.includes(k))) { wakeByVoice(); break; }
       }
     };
-    // 浏览器在无语音一段时间后会自动 onend, 在 IDLE+开启 时拉起维持待命
+    // 浏览器在无语音一段时间后会自动 onend, 在 IDLE/SLEEP/LISTENING+开启 时拉起维持待命
     vwRecognition.onend = () => {
-      if (voiceWakeOn && (currentState === STATES.IDLE || currentState === STATES.SLEEP) && vwGesture) startVWRecognition();
+      if (voiceWakeOn && (currentState === STATES.IDLE || currentState === STATES.SLEEP || currentState === STATES.LISTENING) && vwGesture) startVWRecognition();
     };
     vwRecognition.onerror = () => { /* 权限拒绝/无网络: 静默, 等待下次手势 */ };
     updateMicUI();
   }
 
   function wakeByVoice() {
-    if (vwWoke) return;
-    // 允许从 IDLE 或 SLEEP 唤醒; SLEEP 时跳 IDLE 直入 LISTENING (用户开口就是要对话)
-    if (currentState !== STATES.IDLE && currentState !== STATES.SLEEP) return;
-    vwWoke = true;
-    lf.pulse();
-    if (currentState === STATES.SLEEP) lf.resume();   // 引擎唤醒
-    startConversation();    // 与点按唤醒同一路径
+    // 语音唤醒优先级同触摸: 任何活跃态均可触发(含 SPEAKING 播报中打断)
+    wake('voice');
   }
 
   function startVWRecognition() {
@@ -823,8 +889,8 @@
   }
 
   function syncVoiceWake() {
-    // IDLE + SLEEP 期间都允许被动监听唤醒词
-    if ((currentState === STATES.IDLE || currentState === STATES.SLEEP) && voiceWakeOn && vwSupported) {
+    // IDLE + SLEEP + LISTENING 期间都允许被动监听唤醒词 (LISTENING 用于语音打断)
+    if ((currentState === STATES.IDLE || currentState === STATES.SLEEP || currentState === STATES.LISTENING) && voiceWakeOn && vwSupported) {
       document.body.classList.add('vw-active');
       startVWRecognition();
     } else {
@@ -847,13 +913,13 @@
   micBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     if (!vwSupported) {
-      // 演示模式 (无 SpeechRecognition): 点话筒直接模拟一次语音唤醒
-      if (currentState === STATES.IDLE) wakeByVoice();
+      // 演示模式(无 SpeechRecognition): 点话筒直接模拟一次唤醒(含本地应答)
+      wake('touch');
       return;
     }
     vwGesture = true;
     voiceWakeOn = !voiceWakeOn;
-    if (voiceWakeOn && currentState === STATES.IDLE) startVWRecognition();
+    if (voiceWakeOn && (currentState === STATES.IDLE || currentState === STATES.SLEEP || currentState === STATES.LISTENING)) startVWRecognition();
     else stopVWRecognition();
     syncVoiceWake();
   });
@@ -861,7 +927,7 @@
   // 演示模式: 待命气泡也可点击触发, 便于无麦克风环境下演示交互
   vwPill.addEventListener('click', (e) => {
     e.stopPropagation();
-    if (!vwSupported && currentState === STATES.IDLE) wakeByVoice();
+    if (!vwSupported) wake('touch');
   });
 
   // ============================================================
