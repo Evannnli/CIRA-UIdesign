@@ -1,5 +1,5 @@
 /**
- * CIRA Web 交互原型 — 主控制器  (v0.3)
+ * CIRA Web 交互原型 — 主控制器  (v0.5)
  *
  * 职责:
  *   - 状态机 (Idle / Listening / Thinking / Speaking / Settings / Offline)
@@ -44,19 +44,50 @@
     SPEAKING: 'speaking',
     SETTINGS: 'settings',
     OFFLINE: 'offline',
+    SLEEP: 'sleep',           // v0.5 新增: 熄屏省电
   };
   let currentState = STATES.IDLE;
 
   const STATE_EMOTION = {
     idle: 'calm', listening: 'curious', thinking: 'thinking',
-    speaking: 'happy', offline: 'worried', settings: 'calm',
+    speaking: 'happy', offline: 'worried', settings: 'calm', sleep: 'calm',
   };
   const STATE_COLOR = {
     idle: '#FF8A3D', listening: '#FF8A3D', thinking: '#A98CE0',
-    speaking: '#FF8A3D', offline: '#FF9EB5', settings: '#FFFFFF',
+    speaking: '#FF8A3D', offline: '#FF9EB5', settings: '#FFFFFF', sleep: '#000000',
   };
 
+  // ---- SLEEP 超时参数 (ms) — 详见 HANDOFF.md §8 待确认项 ----
+  const SLEEP_TIMEOUTS = {
+    fromIdle:     30000,    // IDLE 空闲 30s → SLEEP
+    fromListening: 60000,    // LISTENING ASR 超时 60s → SLEEP (原型对话很快, 实际触发由产品定)
+    fromThinking:  15000,    // THINKING 模型超时 15s → SLEEP
+    fromSpeaking:  30000,    // SPEAKING 结束后 30s → SLEEP (经 IDLE 两级)
+  };
+  let sleepTimer = null;
+  function clearSleepTimer() { if (sleepTimer) { clearTimeout(sleepTimer); sleepTimer = null; } }
+  function armSleepTimer(ms) { clearSleepTimer(); sleepTimer = setTimeout(() => {
+    if (currentState === STATES.IDLE) transition(STATES.SLEEP);
+  }, ms); }
+
   function transition(next, opts = {}) {
+    clearSleepTimer();
+
+    // SLEEP: 引擎暂停 + 全黑遮罩; 非 SLEEP: 恢复引擎 + 还原遮罩
+    if (next === STATES.SLEEP) {
+      lf.pause();
+      brightnessOverlay.style.opacity = '1';
+      brightnessOverlay.style.transition = 'opacity 0.35s ease';
+      document.body.classList.add('sleep-mode');
+    } else {
+      if (currentState === STATES.SLEEP) {
+        lf.resume();
+        brightnessOverlay.style.transition = 'opacity 0.35s ease';
+        setBrightness(brightnessNit);   // 还原用户设定的不透明度 (覆盖 SLEEP 期间的 1.0)
+      }
+      document.body.classList.remove('sleep-mode');
+    }
+
     currentState = next;
 
     // 设置浮层: 进入显示并回到主菜单 / 退出隐藏
@@ -67,23 +98,29 @@
       settings.classList.remove('show');
     }
 
-    lf.setState(next);
-    lf.setEmotion(opts.emotion || STATE_EMOTION[next]);
+    if (next !== STATES.SLEEP) {
+      lf.setState(next);
+      lf.setEmotion(opts.emotion || STATE_EMOTION[next]);
+    }
 
     stateLabel.textContent = next;
     stateDot.style.background = STATE_COLOR[next];
     stateDot.style.boxShadow = `0 0 8px ${STATE_COLOR[next]}`;
     stateBadge.style.borderColor = hexToRGBA(STATE_COLOR[next], 0.25);
 
-    // 字幕: 仅 Listening(接收) / Speaking(输出) 显示
+    // 字幕: 仅 Listening(接收) / Speaking(输出) 显示; SLEEP 也强制隐藏
     if (next !== STATES.SPEAKING && next !== STATES.LISTENING) {
       subtitle.classList.remove('show', 'listening');
     }
 
-    // 回到 IDLE: 允许下一次语音唤醒再次触发
-    if (next === STATES.IDLE) vwWoke = false;
+    // 回到 IDLE: 允许下一次语音唤醒再次触发 + 启动 SLEEP 计时器
+    if (next === STATES.IDLE) {
+      vwWoke = false;
+      armSleepTimer(SLEEP_TIMEOUTS.fromIdle);
+    }
+    // SPEAKING 结束会由 speakScript 切回 IDLE, 此时由 IDLE 路径启动 SLEEP 计时器
 
-    // 语音唤醒: 仅 IDLE 且开启时被动聆听唤醒词
+    // 语音唤醒: IDLE + SLEEP 时都允许被动聆听 (SLEEP 时跳 IDLE 直入 LISTENING)
     syncVoiceWake();
 
     offline.classList.toggle('show', next === STATES.OFFLINE);
@@ -523,7 +560,8 @@
     // 低于 200 nit 才逐渐变暗以模拟夜间, 最暗保留 ~0.8 不至全黑
     const COMFORT = 200;
     const op = Math.max(0, (COMFORT - brightnessNit) / COMFORT) * 0.8;
-    brightnessOverlay.style.opacity = op.toFixed(3);
+    // SLEEP 期间保持全黑 (transition() 控制); 退出 SLEEP 后由本函数恢复
+    if (currentState !== STATES.SLEEP) brightnessOverlay.style.opacity = op.toFixed(3);
     miBri.textContent = brightnessNit + ' nit';
   }
   attachSlider(document.getElementById('bri-slider'), 1, 400, setBrightness);
@@ -562,6 +600,7 @@
     pressTimer = null;
     if (currentState === STATES.IDLE) startConversation();
     else if (currentState === STATES.OFFLINE) transition(STATES.IDLE);
+    else if (currentState === STATES.SLEEP) transition(STATES.IDLE);   // 触摸唤醒: 任意触摸 → IDLE, 不直接进 LISTENING
   });
 
   canvas.addEventListener('pointercancel', () => {
@@ -750,7 +789,8 @@
     vwRecognition.interimResults = true;
 
     vwRecognition.onresult = (ev) => {
-      if (!voiceWakeOn || currentState !== STATES.IDLE || vwWoke) return;
+      if (!voiceWakeOn || vwWoke) return;
+      if (currentState !== STATES.IDLE && currentState !== STATES.SLEEP) return;
       for (let i = ev.resultIndex; i < ev.results.length; i++) {
         const txt = (ev.results[i][0].transcript || '').toLowerCase();
         if (VW_KEYWORDS.some(k => txt.includes(k))) { wakeByVoice(); break; }
@@ -758,16 +798,19 @@
     };
     // 浏览器在无语音一段时间后会自动 onend, 在 IDLE+开启 时拉起维持待命
     vwRecognition.onend = () => {
-      if (voiceWakeOn && currentState === STATES.IDLE && vwGesture) startVWRecognition();
+      if (voiceWakeOn && (currentState === STATES.IDLE || currentState === STATES.SLEEP) && vwGesture) startVWRecognition();
     };
     vwRecognition.onerror = () => { /* 权限拒绝/无网络: 静默, 等待下次手势 */ };
     updateMicUI();
   }
 
   function wakeByVoice() {
-    if (currentState !== STATES.IDLE || vwWoke) return;
+    if (vwWoke) return;
+    // 允许从 IDLE 或 SLEEP 唤醒; SLEEP 时跳 IDLE 直入 LISTENING (用户开口就是要对话)
+    if (currentState !== STATES.IDLE && currentState !== STATES.SLEEP) return;
     vwWoke = true;
     lf.pulse();
+    if (currentState === STATES.SLEEP) lf.resume();   // 引擎唤醒
     startConversation();    // 与点按唤醒同一路径
   }
 
@@ -780,7 +823,8 @@
   }
 
   function syncVoiceWake() {
-    if (currentState === STATES.IDLE && voiceWakeOn && vwSupported) {
+    // IDLE + SLEEP 期间都允许被动监听唤醒词
+    if ((currentState === STATES.IDLE || currentState === STATES.SLEEP) && voiceWakeOn && vwSupported) {
       document.body.classList.add('vw-active');
       startVWRecognition();
     } else {

@@ -623,6 +623,13 @@ body.vw-active .mic-btn.on {
   z-index: 5;
 }
 
+/* SLEEP 熄屏模式: 隐藏一切 UI, 等同物理熄屏 (调试面板除外) */
+body.sleep-mode #voice-wake,
+body.sleep-mode .touch-hint,
+body.sleep-mode #subtitle,
+body.sleep-mode #offline-banner,
+body.sleep-mode #settings-panel { display: none !important; }
+
 /* 离线提示浮层 */
 .offline-banner {
   position: absolute;

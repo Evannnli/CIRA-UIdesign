@@ -249,6 +249,26 @@
       window.removeEventListener('resize', this._onResize);
     }
 
+    // ---------- SLEEP 状态: 熄屏省电 ----------
+    pause() {
+      this._running = false;
+      // 清屏 = 等同物理熄屏 (开发在设备上对应 LCD backlight off / OLED pixel off)
+      try {
+        this.tctx.clearRect(0, 0, this.trail.width, this.trail.height);
+        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+        // 黑底矩形兜底, 防止某些浏览器不立即 commit clear
+        this.ctx.fillStyle = '#000';
+        this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+      } catch(e) {}
+    }
+    resume() {
+      if (this._running) return;
+      this._running = true;
+      this._lastFrame = performance.now();
+      this._t0 = performance.now();
+      requestAnimationFrame(this._loop);
+    }
+
     // ---------- 尺寸 / 图层 ----------
     _resize() {
       const rect = this.canvas.getBoundingClientRect();
