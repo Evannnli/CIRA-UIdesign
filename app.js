@@ -1,5 +1,5 @@
 /**
- * CIRA Web 交互原型 — 主控制器  (v0.6)
+ * CIRA Web 交互原型 — 主控制器  (v0.6.1)
  *
  * 职责:
  *   - 状态机 (Idle / Listening / Thinking / Speaking / Settings / Offline / Sleep)
@@ -76,6 +76,7 @@
 
   function transition(next, opts = {}) {
     clearSleepTimer();
+    const prev = currentState;
 
     // SLEEP: 引擎暂停 + 全黑遮罩; 非 SLEEP: 恢复引擎 + 还原遮罩
     if (next === STATES.SLEEP) {
@@ -84,12 +85,18 @@
       brightnessOverlay.style.transition = 'opacity 0.35s ease';
       document.body.classList.add('sleep-mode');
     } else {
-      if (currentState === STATES.SLEEP) {
+      if (prev === STATES.SLEEP) {
+        // 离开 SLEEP: 必须先更新 currentState 再还原遮罩 —— 否则 setBrightness 里的
+        // `currentState !== STATES.SLEEP` 守卫会判定"仍在熄屏"而跳过复位, 导致全黑遮罩
+        // 残留、屏幕永远亮不起来 (v0.6.1 修正)
         lf.resume();
         brightnessOverlay.style.transition = 'opacity 0.35s ease';
-        setBrightness(brightnessNit);   // 还原用户设定的不透明度 (覆盖 SLEEP 期间的 1.0)
+        currentState = next;                 // 提前更新, 让 setBrightness 守卫放行
+        setBrightness(brightnessNit);        // 还原用户设定的不透明度 (覆盖 SLEEP 期间的 1.0)
+        document.body.classList.remove('sleep-mode');
+      } else {
+        document.body.classList.remove('sleep-mode');
       }
-      document.body.classList.remove('sleep-mode');
     }
 
     currentState = next;
