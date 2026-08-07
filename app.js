@@ -4,6 +4,7 @@
  * 职责:
  *   - 状态机 (Idle / Listening / Thinking / Speaking / Settings / Offline)
  *   - 触摸交互 (点按唤醒, 长按 1.2s 进 Settings)
+ *   - 语音唤醒 (唤醒方式之二): "你好，cira" / "你好，西拉" 唤醒词, 待机时被动聆听
  *   - Settings 多视图导航 (home / wifi / wifi-pwd / wifi-detail /
  *       bluetooth / bt-detail / volume / brightness / mode)
  *   - Wi-Fi 完整链路: 开关 / 自动搜索 + 重新搜索 / 点击连接 / 屏内键盘输入密码 / 忘掉此网络
@@ -78,6 +79,12 @@
     if (next !== STATES.SPEAKING && next !== STATES.LISTENING) {
       subtitle.classList.remove('show', 'listening');
     }
+
+    // 回到 IDLE: 允许下一次语音唤醒再次触发
+    if (next === STATES.IDLE) vwWoke = false;
+
+    // 语音唤醒: 仅 IDLE 且开启时被动聆听唤醒词
+    syncVoiceWake();
 
     offline.classList.toggle('show', next === STATES.OFFLINE);
 
@@ -711,9 +718,113 @@
   }
 
   // ============================================================
+  //  语音唤醒 (唤醒方式之二)
+  //  唤醒词: "你好，cira"(英文发音) / "你好，西拉"(中文发音)
+  //  待机(IDLE)时被动聆听; 命中 → 与"点按唤醒"同路径进入 LISTENING
+  //  真机用端侧唤醒词引擎(Porcupine/WeNet 等); 本原型用 Web Speech API(zh-CN) 最佳实践
+  // ============================================================
+  const micBtn = document.getElementById('mic-btn');
+  const vwPill = document.getElementById('vw-pill');
+  const vwText = vwPill.querySelector('.vw-text');
+  let voiceWakeOn = true;        // 默认开启
+  let vwSupported = false;
+  let vwRecognition = null;
+  let vwWoke = false;            // 防一次说话重复触发
+  let vwGesture = false;         // 首个用户手势后才真正 start (避免加载即弹麦克风权限)
+
+  // 唤醒词 (小写匹配): cira / 西拉(中文发音) / 西啦(同音) / 带 hi/hey 前缀
+  const VW_KEYWORDS = ['cira', '西拉', '西啦', 'ci ra', 'hey cira', 'hi cira', 'hello cira'];
+
+  function initVoiceWake() {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
+      vwSupported = false;
+      vwText.textContent = '本浏览器不支持语音识别 · 点话筒模拟唤醒';
+      updateMicUI();
+      return;
+    }
+    vwSupported = true;
+    vwRecognition = new SR();
+    vwRecognition.lang = 'zh-CN';
+    vwRecognition.continuous = true;
+    vwRecognition.interimResults = true;
+
+    vwRecognition.onresult = (ev) => {
+      if (!voiceWakeOn || currentState !== STATES.IDLE || vwWoke) return;
+      for (let i = ev.resultIndex; i < ev.results.length; i++) {
+        const txt = (ev.results[i][0].transcript || '').toLowerCase();
+        if (VW_KEYWORDS.some(k => txt.includes(k))) { wakeByVoice(); break; }
+      }
+    };
+    // 浏览器在无语音一段时间后会自动 onend, 在 IDLE+开启 时拉起维持待命
+    vwRecognition.onend = () => {
+      if (voiceWakeOn && currentState === STATES.IDLE && vwGesture) startVWRecognition();
+    };
+    vwRecognition.onerror = () => { /* 权限拒绝/无网络: 静默, 等待下次手势 */ };
+    updateMicUI();
+  }
+
+  function wakeByVoice() {
+    if (currentState !== STATES.IDLE || vwWoke) return;
+    vwWoke = true;
+    lf.pulse();
+    startConversation();    // 与点按唤醒同一路径
+  }
+
+  function startVWRecognition() {
+    if (!vwSupported || !voiceWakeOn || !vwGesture) return;
+    try { vwRecognition.start(); } catch (_) { /* 已在运行 */ }
+  }
+  function stopVWRecognition() {
+    if (vwRecognition) { try { vwRecognition.stop(); } catch (_) {} }
+  }
+
+  function syncVoiceWake() {
+    if (currentState === STATES.IDLE && voiceWakeOn && vwSupported) {
+      document.body.classList.add('vw-active');
+      startVWRecognition();
+    } else {
+      document.body.classList.remove('vw-active');
+      stopVWRecognition();
+    }
+    updateMicUI();
+  }
+
+  function updateMicUI() {
+    micBtn.classList.toggle('on', voiceWakeOn);
+    vwPill.classList.toggle('show', voiceWakeOn);
+  }
+
+  // 首个用户手势后, 才真正拉起语音识别 (规避加载即弹麦克风权限)
+  document.addEventListener('pointerdown', () => {
+    if (!vwGesture) { vwGesture = true; if (currentState === STATES.IDLE) startVWRecognition(); }
+  }, { once: false });
+
+  micBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!vwSupported) {
+      // 演示模式 (无 SpeechRecognition): 点话筒直接模拟一次语音唤醒
+      if (currentState === STATES.IDLE) wakeByVoice();
+      return;
+    }
+    vwGesture = true;
+    voiceWakeOn = !voiceWakeOn;
+    if (voiceWakeOn && currentState === STATES.IDLE) startVWRecognition();
+    else stopVWRecognition();
+    syncVoiceWake();
+  });
+
+  // 演示模式: 待命气泡也可点击触发, 便于无麦克风环境下演示交互
+  vwPill.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (!vwSupported && currentState === STATES.IDLE) wakeByVoice();
+  });
+
+  // ============================================================
   //  初始化
   // ============================================================
   buildKeypad();
+  initVoiceWake();
   transition(STATES.IDLE);
   setVolume(60);
   setBrightness(200);

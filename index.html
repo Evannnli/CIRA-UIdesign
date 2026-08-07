@@ -3,15 +3,15 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>CIRA · 设备端交互原型 v0.1</title>
-  <link rel="stylesheet" href="styles.css?v=0.31">
+  <title>CIRA · 设备端交互原型 v0.4</title>
+  <link rel="stylesheet" href="styles.css?v=0.4">
 </head>
 <body>
 
 <header>
   <div class="title">
     <h1>CIRA</h1>
-    <span class="ver">设备端交互原型 · v0.3</span>
+    <span class="ver">设备端交互原型 · v0.4</span>
   </div>
   <div class="meta">360×360 圆屏 · 光生命体 · Web 模拟</div>
 </header>
@@ -29,6 +29,21 @@
       <canvas id="lifeform" class="lifeform-canvas" width="360" height="360"></canvas>
 
       <div class="subtitle" id="subtitle">—</div>
+
+      <!-- 语音唤醒 (唤醒方式之二): 待机时被动聆听唤醒词 -->
+      <div class="voice-wake" id="voice-wake">
+        <div class="vw-pill" id="vw-pill">
+          <span class="vw-dot"></span>
+          <span class="vw-text">在听 · “你好，cira” / “你好，西拉”</span>
+        </div>
+        <button class="mic-btn" id="mic-btn" aria-label="语音唤醒">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <rect x="9" y="3" width="6" height="11" rx="3"/>
+            <path d="M5 11a7 7 0 0014 0"/>
+            <path d="M12 18v3"/>
+          </svg>
+        </button>
+      </div>
 
       <!-- 离线提示 (异常态 §8) -->
       <div class="offline-banner" id="offline-banner">
@@ -237,7 +252,7 @@
     </div>
 
     <div class="touch-hint">
-      <kbd>点按</kbd> 唤醒对话 &nbsp;·&nbsp; <kbd>长按 1.2s</kbd> 进入设置
+      <kbd>点按</kbd> 唤醒对话 &nbsp;·&nbsp; <kbd>长按 1.2s</kbd> 进入设置 &nbsp;·&nbsp; 说 <kbd>你好，cira</kbd> 语音唤醒
     </div>
   </div>
 
@@ -317,6 +332,6 @@
 </footer>
 
 <script src="lifeform.js"></script>
-<script src="app.js?v=0.31"></script>
+<script src="app.js?v=0.4"></script>
 </body>
 </html>
