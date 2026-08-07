@@ -1,0 +1,8 @@
+# macOS
+.DS_Store
+
+# 编辑器
+*.swp
+.idea/
+
+# 空目录占位（assets 暂未使用）
