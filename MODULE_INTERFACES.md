@@ -1,8 +1,8 @@
 # CIRA 模块接口冻结规格 (Frozen Module Interfaces)
 
 > 版本：**v0.7** ｜ 日期：2026-08-08 ｜ 阶段：**接口冻结优先**（模块内部可后补，接口不可改）
-> 适用：CIRA 圆形屏 AI 陪伴设备（ESP32 + 圆形 LCD/AMOLED）
-> 配套：`cira-prototype/`（参考实现：模块 3 Device Runtime 真实逻辑 + 模块 1/2 的**本地占位桩**。`core.js`/`language.js` 仅为离线跑原型用；模块 1/2 的真实实现由其他团队在 GitHub 维护，接入时直接替换占位桩即可，app.js 不变）
+> 适用：CIRA 圆形屏 AI 陪伴设备 — 硬件目标 **ESP32-S3-Touch-LCD-1.85C-BOX**（360×360 圆 LCD，ESP32-S3R8 + 8MB PSRAM）｜ **Device Runtime 目标版本 `v0.8.0`**（硬件基线，见 `HARDWARE.md`）
+> 配套：`cira-prototype/`（参考实现：模块 3 Device Runtime 真实逻辑 + 模块 1/2 的**本地占位桩**。`core.js`/`language.js` 仅为离线跑原型用；模块 1/2 的真实实现由其他团队在 GitHub 维护，接入时直接替换占位桩即可，app.js 不变）；`HARDWARE.md`（**硬件权威文档**：型号/引脚/接口协议/烧录/待确认项）
 
 ---
 
@@ -147,15 +147,18 @@ LanguageSystem.synthesize(pkg: ResponsePackage) -> Promise<AudioHandle>
 > 提供后，只需把 `modules.js` 里的 `CIRA_INTEGRATION.core/language` 从 `'local'` 改成 `{type:'ws', url:'…'}`，`app.js` 一行不用改即可接入真实模块。
 
 ### 7.2 硬件设备信息（用于把 Device Runtime 移植到开发板）
-| 需要 | 说明 | 用途 |
+
+> **已汇总为权威文档 `HARDWARE.md`**（型号/引脚/接口协议/烧录/待确认项均来自 Waveshare 官方 wiki + 示例源码）。下方为"曾需你提供"的清单，现已基本由官方资料填实；仅 §11（待确认项，尤其是 **HW V1/V2 判定**）仍需你判断。
+
+| 项 | 已确认（权威来源） | 用途 |
 |------|------|------|
-| MCU / SoC 型号与规格 | 如 ESP32-S3（是否带 PSRAM、主频、RAM） | 决定星云粒子动画能否实时渲染 |
-| 屏幕 | 分辨率（已定 360×360 圆）、面板类型（LCD/AMOLED）、驱动 IC、总线（SPI/QSPI）、色深（RGB565?） | 移植渲染层（Canvas → 帧缓冲 / LVGL） |
-| 触摸 | 控制器型号（如 CST816S）、总线、是否支持长按 | 移植触摸唤醒 / 长按进设置 |
-| 音频 | 麦克风（数字 I2S? 模拟?）、Codec、功放/喇叭、I2S 配置 | 移植 ASR 采集 + 模块2 音频播放 |
-| 连接 | Wi-Fi（配网方式）、BLE？ | 模块1/2 云端通信 + 配网 UI |
-| 固件框架 | ESP-IDF 版本？Arduino？LVGL 版本？还是自定义帧缓冲？ | 决定代码形态 |
-| 电源 / 唤醒 | 电池电压、休眠电流目标、从 SLEEP 唤醒的硬件源（触摸 GPIO / RTC） | 移植 10s 熄屏省电 |
+| MCU / SoC | ESP32-S3R8，双核 240MHz，8MB PSRAM，16MB Flash | 决定星云粒子动画能否实时渲染 |
+| 屏幕 | 360×360 圆 LCD，驱动 **ST77916**，QSPI，RGB565 | 移植渲染层（Canvas → 帧缓冲） |
+| 触摸 | **CST816T**，I2C 0x15，INT=GPIO4，单点+手势 | 移植触摸唤醒 / 长按进设置 |
+| 音频 | **ES8311**(DAC)+**ES7210**(ADC)+**NS4150B**(功放)，I2S MCLK=GPIO2/BCK=GPIO48/LRCK=GPIO38/DOUT=GPIO47/DIN=GPIO39，PA=GPIO15 | 移植 ASR 采集 + 模块2 音频播放 |
+| 连接 | Wi-Fi 802.11b/g/n + BLE5 | 模块1/2 云端通信 + 配网 UI |
+| 固件框架 | Arduino(esp32 3.2.0/LVGL9.3.0) 或 ESP-IDF(≥5.5.1) | 决定代码形态 |
+| 电源 / 唤醒 | 3.7V 锂电(MX1.25)，唤醒源=触摸 INT(GPIO4)/语音唤醒词 | 移植 10s 熄屏省电 |
 
 ### 7.3 烧录环境（「直接开发进开发板」的前提）
 - 开发板需**物理连接到本机**（USB 串口 / 或网络），且本机具备对应工具链（如 ESP-IDF）。
@@ -183,3 +186,24 @@ const CIRA_INTEGRATION = {
 ```
 
 分布式消息协议见 §4；`modules.js` 已内置 WebSocket 客户端示例，通常**无需改动**即可接入。
+
+---
+
+## 9. 设备接口映射（模块协议 → 硬件落点）
+
+> 模块接口（§1–§3）如何落到 ESP32-S3-Touch-LCD-1.85C-BOX 真实硬件。硬件引脚/驱动以 `HARDWARE.md` 为准（V2 假设）。
+
+| Device Runtime 输入/契约 | 硬件落点（V2） | 说明 |
+|--------------------------|----------------|------|
+| 状态 `idle/listening/thinking/speaking/settings/sleep/offline` | 星云渲染 → **ST77916** 帧缓冲；`sleep` → 背光 **GPIO5** 占空比 0 + 停粒子渲染（`lf.pause()`） | SLEEP 视觉=黑屏省电 |
+| 情绪 `emotion`（calm/curious/thinking/happy/worried） | 星云形态参数（`lifeform.js` 的 density/pulse/color）→ 帧缓冲 | 暖白 `#FFE9C7` 光团 |
+| 音频 `AudioHandle`（play/stop/onEnd） | **ES8311** I2S 播放：DOUT=GPIO47 / DIN=GPIO39；PA 使能 **GPIO15**；MCLK=GPIO2/BCK=GPIO48/LRCK=GPIO38 | `stop()` 即唤醒打断当前播报 |
+| 唤醒（触摸 / 语音唤醒词） | 触摸 INT **GPIO4**（CST816）/ **ESP-SR** 唤醒词「你好，cira/西拉」 | 本地应答不进大模型 |
+| 亮度 1–400 nit | 背光 PWM **GPIO5**（占空比映射） | `setBrightness()` → 占空比 |
+| 长按进设置（≥1.2s） | 触摸按下计时（软件），非依赖 CST816 长按手势 | CST816 单点，故 UI 限单点 |
+
+**移植要点（与 Web 仿真器差异）**：
+- 渲染后端：浏览器 Canvas 2D → ESP32 帧缓冲（LVGL `lv_canvas` 或直接写 ST77916 framebuffer）。
+- 音频后端：Web Speech TTS（占位桩）→ ES8311 I2S 真实播放（模块2 输出 PCM）。
+- 状态机/触摸/唤醒逻辑（`app.js`/`lifeform.js` 抽象）**可复用**，仅 I/O 适配层替换。
+- ⚠️ 详见 `HARDWARE.md §11`：若你的板是 **HW V1**，音频栈（PCM5101A / 无 ES7210 / 不同 I2S 引脚）需整体替换。
