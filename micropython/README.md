@@ -197,3 +197,27 @@ v0.8.4 的"无 traceback"只在待机态验证过，点按路径从没实测，�
 
 **真机验证**：clean cold reset 后 `boot.log` 走完 `LF ok frames=1 → WS ok`，`anim frames` 持续爬升、`PING` 响应、无 `MAIN CRASH`；开机即可点按交互。
 
+## 11. v0.8.7 星云重做 + 控制中心重写对齐原型（2026-08-08）
+
+**Evan 反馈**：①"星云就是五个红色圆形、难看"；②"控制中心在 HTML 原型里交互 OK，到设备上就坏了，设计也跟 HTML 差很远"。
+
+**① 星云（cira_lifeform.py）根因**：设备端把原型 `lifeform.js` 的**柔光精灵（radialGradient 软斑）**退化成了**硬 5 点十字 splat（`_KERN`）+ 平铺径向底 + 硬核辉光** → 生硬红点/圆，不像星云。
+修复：
+- 预生成**柔光圆斑软核 `_BLOB`（半径 3，约 21 个非零像素，权重径向衰减）**，`_splat` 用它对缓冲区做加色 stamp；上千颗软圆点疏密堆叠成连续星云（不再是硬十字/方块）。
+- `_INC_SCALE` 9.0 → 14.0（柔斑后需调大才看得见；偏白再调小）。
+- 配色沿用 `cira_emotions` 暖白/暖橙/软粉（非纯红）；背景维持原型式平滑径向渐变 + 暗角（`_build_bg` 不变）。
+- 想更朦胧：把 `_make_blob(R)` 的 `R` 调到 4~5（更慢）。
+
+**② 控制中心（cira_control_center.py）根因**：设备端写成"长按进、长按出"极简三列表——既丑，又让进/出的长按互相踩（进 CC 的长按尾被当"退出长按"立刻弹回主屏 → 随后一点就触发主屏唤醒）。原型是**菜单逐层下钻 + 完成按钮退出**（进=长按、出=按钮，永不串台）。
+重写：
+- HOME 菜单 5 行：Wi-Fi / 蓝牙 / 音量 / 亮度 / 模式（含行首图标点 + 标签 + 实时值 + `›` chevron）+ 底部"完成"按钮；选中行暖橙高亮底。
+- 点行进子视图：顶部 `‹` 返回箭头 + 标题；音量/亮度/模式显示 2x 放大大数值 + 滑块条；Wi-Fi/蓝牙为状态显示行（暂仅显示，未做完整扫描 UI）。
+- **`run()` 开场先 `_wait_release(touch)` 吃掉落场长按残余**，退出改"完成"按钮（短按），与进入的长按彻底解耦 → 根治进/出串台。
+- 导航：HOME 点哪行进哪行（也支持空白区左/右移动选择）；子视图左/右调节、中点返回。
+
+**确定性验证（Mac 桩，无需硬件）**：
+- `tools/test_cc.py`：断言所有视图（home/wifi/bt/vol/bri/mode）+ 各选中态绘制无异常；`_adjust` 音量/亮度/模式调节与钳位正确；`_row_at`/`_in_done` 命中正确；完整状态机 `home→vol→home→完成` 正常退出无异常。
+- `tools/test_lf_smoke.py`：桩 `cira_emotions` + 假 canvas，构建 `Lifeform` 并对 idle/listen/think/speak/wake/offline 六态各 tick 数帧，断言软斑渲染无异常。
+
+**真机验证**：clean cold reset 后 `boot.log` 走完 `LF ok frames=1 → WS ok`、无 `MAIN CRASH`、无 `[LF] render error`、`PING` 响应。（视觉观感/亮度需拿板子确认，参数可继续调。）
+

@@ -2,7 +2,7 @@
 
 > 项目传承文档。跨模型 / 跨会话 / 跨电脑防断片。接手第一件事：先读本文件。
 >
-> **最后更新：2026-08-08** ｜ 对应产物：`cira-prototype` Web 原型 **v0.7**（已 git 入库 → `Evannnli/CIRA-UIdesign`）+ HARDWARE.md（硬件权威文档）+ HANDOFF v0.7 + MODULE_INTERFACES v0.7 同步 ｜ **Device Runtime `v0.8.6`（硬件目标 ESP32-S3-Touch-LCD-1.85C-BOX / V2）真修 `do_conversation` 崩溃（ui_state/ws/lf 提升为模块级全局）+ WiFi/WS 连接移后台线程（开机即交互、不再被网络超时卡 25~30s）** ｜ 模块1/2 契约差异由「适配桥接层」兜住（MODULE_INTERFACES §10）
+> **最后更新：2026-08-08** ｜ 对应产物：`cira-prototype` Web 原型 **v0.7**（已 git 入库 → `Evannnli/CIRA-UIdesign`）+ HARDWARE.md（硬件权威文档）+ HANDOFF v0.7 + MODULE_INTERFACES v0.7 同步 ｜ **Device Runtime `v0.8.7`（硬件目标 ESP32-S3-Touch-LCD-1.85C-BOX / V2）星云重做（硬十字 splat→柔光软斑 `_BLOB`）+ 控制中心重写对齐 HTML 原型（菜单下钻 + 完成退出，根治进/出长按串台）** ｜ 模块1/2 契约差异由「适配桥接层」兜住（MODULE_INTERFACES §10）
 
 ---
 
@@ -89,7 +89,8 @@
 ## 6. 下一步候选
 
 - ✅ **v0.8.6 真修 `do_conversation` 崩溃 + WiFi/WS 移后台（2026-08-08）**：**Evan 三点反馈（#1 星云没生效 / #2 只有一声唤醒没后续 / #3 唤醒后没接模型）本轮全部定位并修掉。** ① **#1 显示**：冷启动 PSRAM 缓存未一致时 viper `_blit_kernel` 读 PSRAM 会硬 fault 冻屏；改为开机先用纯 Python 安全版 blit 预热 3 帧（~12s），再切回 viper 原生 blit（~50~160ms/帧），星云顺滑呼吸、冷启动不冻死（`cira_display._patch_blit`）。② **#3 真凶（真正根因）**：v0.8.5 只修了 `_LAST_WAKE_MS` 的 NameError，但 `do_conversation`（模块级函数）里调的 `ui_state` 仍是 `main()` 的**嵌套函数**、`ws`/`lf` 仍是 `main()` 的**局部变量** → 一进 `do_conversation` 就 `NameError: name 'ui_state' is not defined` → `MAIN CRASH` → 设备复位（这正是"唤醒后没任何反馈/像坏了"的真因）。修复：把 `ui_state`、`ws`、`lf` 全部提升为**模块级全局**（`do_conversation` 现在能读到）；`ws` 缺失时走"WS none"分支优雅降级。`tools/test_scoping.py`（Mac + 桩硬件模块 import 真实 `cira_main.py`）断言 `do_conversation(ws)` 真跑到 `voice_turn(audio_b64)` 且 `ws=None` 不崩，**确定性验证修复**。③ **#2 开机即交互**：原来 `connect_wifi()`+`ws.connect()` 在主线程、在交互主循环**之前**跑，桥接层不可达时要被 15s×2 网络超时卡 25~30s，期间点按无反应（像"没后续"）。改为开**后台线程**连 WiFi+WS（`_net_connect`），主交互循环立即启动；本地唤醒/触摸/控制中心不等网络。④ 加 `machine.WDT(timeout=30000)` 兜底任何残留硬 fault 自动复位（覆盖冷启动宽窗）。**真机验证**：clean cold reset 后 `boot.log` 走完 `LF ok frames=1 → WS ok`，`anim frames` 持续爬升、`PING` 响应、无 `MAIN CRASH`；开机即可点按交互。
-- **控制中心形态**（Evan 提及：iOS 控制中心式——主屏快捷开关 + 长按开关弹悬浮详情页；本次交付仍以现有多视图为准，列为后续候选）
+- ✅ **v0.8.7 星云重做 + 控制中心重写对齐原型（2026-08-08）**：Evan 反馈①"星云就是五个红色圆形、难看"、②"控制中心交互在 HTML 原型里 OK、到设备上就坏了，而且设计跟 HTML 差很远"。**① 星云**：根因是设备端把原型 `lifeform.js` 的**柔光精灵（radialGradient 软斑）**退化成了**硬 5 点十字 splat（`_KERN`）+ 平铺径向底 + 硬核辉光** → 生硬红点/圆，不像星云。修复：预生成**柔光圆斑软核 `_BLOB`（半径3≈21非零像素）**做加色 stamp，上千颗软圆点疏密堆叠成连续星云；`_INC_SCALE` 9→14 让星点可见；配色沿用暖白/暖橙/软粉（非纯红）。背景维持原型式平滑径向渐变+暗角。**② 控制中心**：根因是设备端写成"长按进、长按出"的极简三列表（既丑又让进/出的长按互相踩 → 一点就唤醒），而原型是**菜单逐层下钻 + 完成按钮退出**（进=长按、出=按钮，永不串台）。重写 `cira_control_center.py`：HOME 菜单 5 行（Wi-Fi/蓝牙/音量/亮度/模式，含图标点+值+chevron）+ 完成按钮；点行进子视图（返回箭头+大数值2x字+滑块）；**`run()` 开场先 `_wait_release()` 吃掉落场长按残余** + 退出改"完成"按钮短按 → 彻底根治进/出串台。视觉用暖色菜单/滑块对齐原型 settings-panel。Wi-Fi/蓝牙为状态显示行（暂仅显示，未做完整扫描 UI）。`tools/test_cc.py`（Mac 桩）断言所有视图绘制无异常 + 状态机 home→子视图→home→完成 正常退出；`tools/test_lf_smoke.py`（Mac 桩）断言六态渲染无异常。**真机验证**：clean cold reset 后 `boot.log` 走完 `LF ok frames=1 → WS ok`、无 `MAIN CRASH`、无 `[LF] render error`、`PING` 响应。（视觉观感需 Evan 拿板子确认，亮度/柔和度参数可继续调。）
+- **控制中心形态**（Evan 提及：iOS 控制中心式——主屏快捷开关 + 长按开关弹悬浮详情页；v0.8.7 已对齐原型的多视图下钻结构，列为后续增强）
 - 真实音频输入（Web Speech API）
 - 多分辨率（240/480 圆屏）测试
 - TTS 字幕同步滚动
