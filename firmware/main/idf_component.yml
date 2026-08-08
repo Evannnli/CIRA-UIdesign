@@ -1,0 +1,15 @@
+# CIRA Device Runtime v0.8.0 依赖
+# 说明: waveshare 专属 LCD(ST77916)/触摸(CST816) 驱动组件不在官方注册表,
+#       需从 waveshare 示例仓库 vendor 到 firmware/components/ 下 (见 README §2)。
+#       本文件只声明官方/通用组件。
+dependencies:
+  espressif/esp-lcd:
+    version: "^2.4.0"
+  espressif/esp_codec_dev:
+    version: "^1.4.0"
+  espressif/esp-sr:
+    version: "^2.0.0"
+  lvgl/lvgl:
+    version: "^9.2.0"
+  espressif/esp-wifi:
+    version: "^1.0.0"
