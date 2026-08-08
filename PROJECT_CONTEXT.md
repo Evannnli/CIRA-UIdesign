@@ -2,7 +2,7 @@
 
 > 项目传承文档。跨模型 / 跨会话 / 跨电脑防断片。接手第一件事：先读本文件。
 >
-> **最后更新：2026-08-08 18:47** ｜ 对应产物：`cira-prototype` Web 原型 **v0.7**（已 git 入库 → `Evannnli/CIRA-UIdesign`）+ HARDWARE.md（硬件权威文档）+ HANDOFF v0.7 + MODULE_INTERFACES v0.7 同步 ｜ **Device Runtime 真机链路 `v0.8.1`（硬件目标 ESP32-S3-Touch-LCD-1.85C-BOX / 已确认 V2）端到端验证通过** ｜ 模块1/2 契约差异由「适配桥接层」兜住（MODULE_INTERFACES §10）
+> **最后更新：2026-08-08 21:30** ｜ 对应产物：`cira-prototype` Web 原型 **v0.7**（已 git 入库 → `Evannnli/CIRA-UIdesign`）+ HARDWARE.md（硬件权威文档）+ HANDOFF v0.7 + MODULE_INTERFACES v0.7 同步 ｜ **Device Runtime `v0.8.2`（硬件目标 ESP32-S3-Touch-LCD-1.85C-BOX / V2）唤醒链路真机验证通过** ｜ 模块1/2 契约差异由「适配桥接层」兜住（MODULE_INTERFACES §10）
 
 ---
 
@@ -81,6 +81,7 @@
 - ✅ **模型侧桥接层 = 本仓库冻结契约精确镜像（2026-08-08 确认）**：读 `integration/cira_bridge.py` + `README.md`。其 WS 协议(`voice_turn`/`respond`/`synthesize`/`wake_ack`/`ping`, `ws://host:8788`) 返回的 `ResponsePackage`(5值 emotion/mode/priority/endOfTurn/crisis/_ext) 与 `cira_states.h`/§2.2 完全对齐，`AudioHandle` = base64 音频。故 Device Runtime 的集成接缝直接做 **WS 客户端**即可，桥接层 IP 配一下连（无需改任何冻结代码）。`locahost` 验证：`tools/mock_bridge.py` 起 WS :8788，Python 客户端走通 voice_turn/ping/wake_ack。
 - ✅ **真机验证轨道开启（2026-08-08）**：板子插 Mac，端口 **`/dev/cu.usbmodem101`**；`mpremote`/`ampy`/`esptool` 均就绪。路径选定 **MicroPython 真机验证**（不覆盖 Thonny 里的 MicroPython 环境、安全可逆；ESP-IDF C 固件 `firmware/` 留作生产基线）。本回合完成：① 本地 `mock_bridge.py`(WS :8788) 端到端验证通过；② MicroPython `cira_ws.py` WS 客户端（集成接缝）；③ 抽 ST77916 初始化序列(181条→`st77916_init.py`)。待：Thonny **释放端口**(Disconnect) + Evan 给 **WiFi 凭证** → 推 `main.py` 真机验证 WiFi→桥接层→状态机链路；显示/触摸/音频驱动真机迭代。**⚠️ 风险：ST77916 为 QSPI，标准 MicroPython 无 QSPI 类，屏驱可能需 waveshare MP 驱动或降级 ESP-IDF。**
 - ✅ **真机链路端到端验证通过（2026-08-08 18:47 · Device Runtime v0.8.1 里程碑）**：Evan 在 Thonny `Run▸Disconnect` 释放 `/dev/cu.usbmodem101` 端口；WiFi 凭证写入（`叮当的智能家居`/`15295601676yw`）。推 **`cira_main.py`(不覆盖 Xiaozhi `main.py`，改名保可逆) + `cira_ws.py` + 自写 `ws_native.py`**(板子自带 `websocket` 模块是非标准流式封装、无 `WebSocket` 类，弃用，改原生 socket 手写握手/帧)。`mpremote run verify_once.py` 三轮 voice_turn 全过：**板子 WiFi 连 `192.168.31.170` → 原生 WS 客户端握手 Mac `192.168.31.33:8788` mock 桥接层 → 返回冻结契约**(reply + emotion[5值 happy] + audio[base64 ~21KB] + dur=500ms)。**这是 CIRA 首次在真机跑通端到端链路。** 备份：原 Xiaozhi `main.py`(636行)→`backups/xiaozhi_main.py`；Xiaozhi 驱动参考 `ref_cst816/es8311/es7210/audio_out/audio_in/face/lifeform/emotions.py` 已拉取，供下一步屏/触摸/音频驱动移植（ST77916 在固件为 frozen module，需从 waveshare MP 驱动移植）。
+- ✅ **唤醒链路真机验证通过（2026-08-08 21:30 · Device Runtime v0.8.2 里程碑）**：**架构确认——唤醒应答是硬件本地、不进模型侧**（用户认可设计）：点按屏幕 → 本地随机播"我在。/哎！"(`wake_wo.wav`/`wake_ai.wav`，由用户 `哎.m4a`/`我在.mp3` 经 `afconvert` 转 16k 单声道 WAV) → 播完才 `voice_turn` 发模型侧 → 播模型应答音频。**全部经 ES8311 I2S 出声，真机实测通过。** 新增模块：`cira_pins/mclk/cira_i2c(含总线自愈)/cira_codec/cira_audio/cira_touch/cira_expander(TCA9554)/cira_wake/verify_wake`。**三大真机坑已除**：① I2C 总线锁死(SDA 被拉低)→`cira_i2c.recover()` 补 9 个 SCL 脉冲自愈；② CST816 复位门控→TCA9554 `init(0xFF)` 释放全部 EXIO + GPIO1 复位脉冲（chip_id 实测 `0xB5`/awake=True）；③ 统一用 I2C(0)(GPIO10/11,100kHz)，原厂固件即此。屏驱 ST77916 QSPI 为唯一待补设备能力。
 - ⏳ **待 Evan 肉眼验证**（本机无 Chrome/Chromium，需在预览面板看）
 
 ## 6. 下一步候选
