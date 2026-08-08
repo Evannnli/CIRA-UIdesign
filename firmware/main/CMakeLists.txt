@@ -1,0 +1,14 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "cira_statemachine.c"
+        "cira_integration.c"
+        "cira_wake.c"
+        "cira_display.c"
+        "cira_touch.c"
+        "cira_audio.c"
+    INCLUDE_DIRS
+        "include"
+    EMBED_FILES
+        ""
+)
