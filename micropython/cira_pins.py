@@ -22,3 +22,22 @@ ES8311_PA_CTRL = 15         # V2: 功放使能 PA_CTRL（拉高才出声！）
 TOUCH_ADDR = 0x15
 TOUCH_INT = 4
 TOUCH_RST = 1              # V2: RST 走 GPIO1（原厂 config.TOUCH_RST），驱动内做复位脉冲
+
+# ── 屏幕 ST77916 圆形 TFT（QSPI，360×360）──────────────────
+# 来源：ref_config.py（waveshare 官方 wiki 引脚差异表核对）。
+# ⚠️ ST77916 在 1.85C-BOX 上是 QSPI（4 数据线、无独立 DC 脚），
+#    由固件 frozen 模块 st77916.ST77916 用硬件 QSPI 驱动（自带 _blit_kernel）。
+#    LCD_RST 实际走 TCA9554 EXIO2（I2C 0x20），故开机须先 cira_expander.init()
+#    把所有 EXIO 设成输出高，才能释放 LCD 复位（frozen 驱动的 rst= 仅占位）。
+LCD_W = 360
+LCD_H = 360
+LCD_CS = 21
+LCD_PCLK = 40
+LCD_D0 = 46
+LCD_D1 = 45
+LCD_D2 = 42
+LCD_D3 = 41
+LCD_RST = 3               # 占位；真复位走 TCA9554 EXIO2
+LCD_BL = 5                # 背光（frozen 驱动内 PWM 调光 set_nit）
+LCD_MADCTL = 0x00         # 方向/镜像；脸横过来改 0x60/0xA0/0xC0
+LCD_INVERT = False        # 颜色发白/左右反了改 True（开 INVON）
