@@ -179,3 +179,21 @@ v0.8.4 的"无 traceback"只在待机态验证过，点按路径从没实测，�
 正确姿势：`fs rm :main.py` → `fs cp <本地> :main.py`（此时是"新建"能落盘）。
 推到新文件名(如 `:_newmain.py`)可验证写入是否生效，再 `fs cp :_newmain.py :main.py` 也行。
 
+## 10. 真机验证记录（2026-08-08 · v0.8.6 真修对话崩溃 + 网络移后台）
+
+**Evan 三点反馈**：#1 星云没生效 / #2 只有一声唤醒没后续 / #3 唤醒后没接模型。本轮全部定位修掉。
+
+**#1 显示（冷启动冻屏）**：viper `_blit_kernel` 读 PSRAM 在冷启动缓存未一致时会硬 fault 冻屏（非永久）。
+`cira_display._patch_blit` 改为开机先用纯 Python 安全版 blit 预热 3 帧（~12s），再切回 viper 原生 blit（~50~160ms/帧）。`boot.log` 见 `viper_on=1` 即表示切回成功。
+
+**#3 真凶（对话路径 NameError）**：v0.8.5 只修了 `_LAST_WAKE_MS`，但 `do_conversation`（模块级函数）调的 `ui_state` 仍是 `main()` 的**嵌套函数**、`ws`/`lf` 仍是 `main()` 的**局部变量** → 一进 `do_conversation` 就 `NameError: name 'ui_state' is not defined` → `MAIN CRASH` → 设备复位（"唤醒后没反馈/像坏了"的真因）。
+修复：把 `ui_state`、`ws`、`lf` 全部提升为**模块级全局**；`ws` 缺失时走 "WS none" 分支优雅降级。
+**确定性验证**：`tools/test_scoping.py`（Mac + 桩硬件模块 import 真实 `cira_main.py`）断言 `do_conversation(ws)` 真跑到 `voice_turn(audio_b64)` 且 `ws=None` 不崩。
+
+**#2 开机即交互（被网络超时卡住）**：原来 `connect_wifi()`+`ws.connect()` 在主线程、在交互主循环之前跑，桥接层不可达时被 15s×2 网络超时卡 25~30s，期间点按无反应（像"没后续"）。
+改为开**后台线程** `_net_connect` 连 WiFi+WS，主交互循环立即启动；本地唤醒/触摸/控制中心不等网络。
+
+**附带**：`machine.WDT(timeout=30000)` 兜底残留硬 fault 自动复位（覆盖冷启动宽窗）；`ws_native` 大帧（~170KB 录音 base64）分块 `send` 防丢数据；`cira_audio_in.record_wav` 加 2s 收包超时防 ES7210 无数据时死等。
+
+**真机验证**：clean cold reset 后 `boot.log` 走完 `LF ok frames=1 → WS ok`，`anim frames` 持续爬升、`PING` 响应、无 `MAIN CRASH`；开机即可点按交互。
+

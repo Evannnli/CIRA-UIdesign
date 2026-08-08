@@ -125,10 +125,66 @@ def wake_ack(ack_type: str = "default") -> dict:
     return {"ok": True, "audio": _WAKE_WAV, "format": "wav", "durationMs": 400}
 
 
+def _analyze_audio(audio_b64: str):
+    """粗略分析设备传来的 WAV：返回 (rms 0..1, 时长秒)。dev 模式用来判断"有没有说话"。"""
+    try:
+        raw = base64.b64decode(audio_b64)
+        if raw[:4] != b"RIFF" or len(raw) < 44:
+            return 0.0, 0.0
+        sr = int.from_bytes(raw[24:28], "little") or 16000
+        pcm = raw[44:]
+        n = len(pcm) // 2
+        if n == 0:
+            return 0.0, 0.0
+        s = 0
+        # 抽点计算 RMS（每 16 样本取 1，省时间）
+        step = 16
+        cnt = 0
+        for i in range(0, n, step):
+            v = int.from_bytes(pcm[i * 2:i * 2 + 2], "little", signed=True)
+            s += v * v
+            cnt += 1
+        rms = math.sqrt(s / cnt) / 32768.0 if cnt else 0.0
+        dur = n / sr
+        return rms, dur
+    except Exception:
+        return 0.0, 0.0
+
+
 def voice_turn(user_input: dict, audio_fmt: str = "wav", do_tts: bool = True) -> dict:
     audio_b64 = user_input.get("audio") or ""
     transcript = (user_input.get("transcript") or user_input.get("text") or "").strip()
-    if not transcript and audio_b64:
+
+    # dev 回显：设备真录了音 → 分析能量，决定"说话了"还是"没听清"
+    if audio_b64:
+        rms, dur = _analyze_audio(audio_b64)
+        if rms > 0.012:   # 有说活
+            reply = "（dev 回显）我听到你说了约 %.1f 秒！模型侧接好后就是真对话啦～" % dur
+            emotion = "happy" if rms > 0.05 else "curious"
+            audio = audio_b64          # 把孩子的声音原样回放（验证 mic→WS→喇叭 全链路）
+            heard = "（dev 回显：%.1fs 语音）" % dur
+        else:
+            reply = "（dev 模式）麦克风链路是通的，但没听清你说话～"
+            emotion = "calm"
+            audio = _REPLY_WAV
+            heard = ""
+        pkg = respond({"transcript": transcript or "（语音）"})
+        return {
+            "heard": heard,
+            "reply": reply,
+            "emotion": emotion,
+            "crisis": False,
+            "packageId": pkg.get("packageId"),
+            "audio": audio,
+            "format": "wav",
+            "durationMs": int(dur * 1000) if audio == audio_b64 else 500,
+            "timings": {"total": 0.05},
+            "_ext": pkg.get("_ext"),
+            "ok": True,
+        }
+
+    # 旧路径（仅传 transcript，无音频）：合成器 beep + 轮换应答
+    if not transcript:
         r = transcribe(audio_b64, fmt=user_input.get("format", "wav"))
         transcript = (r.get("transcript") or "").strip()
     pkg = respond({"transcript": transcript})

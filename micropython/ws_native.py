@@ -130,7 +130,16 @@ class WebSocket:
             frame += bytes([0x80 | 127]) + struct.pack(">Q", length)
         mask = os.urandom(4)
         masked = bytes(data[i] ^ mask[i & 3] for i in range(length))
-        self.sock.send(frame + mask + masked)
+        # ⚠️ 大帧（如整段录音 base64 ≈ 170KB）必须分块 send：
+        # socket.send 不一定一次发完，不处理剩余字节会丢数据、炸 WS 协议。
+        buf = frame + mask + masked
+        off = 0
+        n = len(buf)
+        while off < n:
+            sent = self.sock.send(buf[off:off + 4096])
+            if sent <= 0:
+                raise OSError("WS send 中断")
+            off += sent
 
     def send(self, data):
         self._send_frame(0x1, data)
