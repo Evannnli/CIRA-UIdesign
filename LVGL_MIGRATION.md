@@ -166,10 +166,16 @@ Evan 本机跑 `tools/lvgl_hello.py` 后，按现象修这些点：
 
 **Evan 本机验证步骤（推送 v0.8.8）**：
 ```
-# 确保 Thonny 已断开释放串口（Cmd+Shift+D 或退出）
+# 0) 先释放串口：Thonny 里 Run ▸ Disconnect(Cmd+Shift+D) 或退出 Thonny，否则连不上
+# 1) 推送两个被 import 的模块
 mpremote connect /dev/cu.usbmodem101 fs cp micropython/cira_lifeform.py :cira_lifeform.py
-mpremote connect /dev/cu.usbmodem101 fs cp micropython/cira_main.py      :cira_main.py
 mpremote connect /dev/cu.usbmodem101 fs cp micropython/cira_control_center.py :cira_control_center.py
+# 2) 更新开机固件（板子开机跑的是 :main.py，不是 :cira_main.py）
+#    ⚠ mpremote 覆盖已存在的 :main.py 会静默失败 → 必须先 rm 再 cp（见 MEMORY 第16行坑）
+mpremote connect /dev/cu.usbmodem101 fs rm :main.py
+mpremote connect /dev/cu.usbmodem101 fs cp micropython/cira_main.py :main.py
+# 3) 重启生效
 mpremote connect /dev/cu.usbmodem101 reset
 ```
+> 验证推送是否真生效（防静默失败）：`mpremote connect /dev/cu.usbmodem101 fs cat :main.py | head -5` 应看到 v0.8.8 的注释/代码；或 `fs cat :cira_lifeform.py | grep _interval` 应看到 `self._interval = 0`。
 观察：星云是否连续呼吸不闪、控制中心拖动是否局部刷不整屏闪。若够顺 → 收尾；若仍卡 → 反馈，我接路线 A 或做字模缓冲 blit 第二步。
