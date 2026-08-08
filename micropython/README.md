@@ -42,9 +42,10 @@ mpremote connect /dev/cu.usbmodem101 run main.py
 | 集成接缝 `cira_ws.py` | ✅ 真机验证通过 | WS 客户端, 协议本地+mock **真机均验证** (voice_turn/respond/synthesize/wake_ack/ping); 底层 `websocket` 模块非标准(无 WebSocket 类)已弃用, 改 `ws_native.py`(原生 socket 手写握手/帧) |
 | 状态机 `main.py` | ✅ 真机验证通过 | 2026-08-08 板子连 WiFi(192.168.31.170)→握手 mock(192.168.31.33:8788)→三轮 voice_turn 全过, REPL 可见完整链路; 显示/音频接好前用打印验证 |
 | 屏驱 `cira_display.py` | ⏳ 待写 | ST77916 初始化序列已抽取 (`st77916_init.py`, 181条). **风险点: ST77916 为 QSPI**, 标准 MicroPython 无 QSPI 类; 固件里屏驱是 frozen module (无 st77916.py 文件); 需从 waveshare MP 驱动移植. **Xiaozhi 参考已拉: `ref_face.py`/`ref_lifeform.py`/`ref_emotions.py`** |
-| 触摸 `cira_touch.py` | ⏳ 待写(有参考) | CST816T I2C 0x15, INT GPIO4; **参考 `ref_cst816.py` 已拉** |
-| 音频 `cira_audio.py` | ⏳ 待写(有参考) | ES8311 I2S + PA GPIO15, 解码 base64→播放; **参考 `ref_es8311.py`/`ref_es7210.py`/`ref_audio_out.py`/`ref_audio_in.py` 已拉** |
-| 唤醒 | ⏳ 待写 | 触摸唤醒 + 本地"我在。/哎！"预录音频(高优先级打断) |
+| 触摸 `cira_touch.py` | ✅ 真机验证通过 | CST816T I2C(0) 0x15, chip_id=0xB5, INT GPIO4, RST=GPIO1; **关键坑: 总线易锁死(SDA 被拉低)→ `cira_i2c.recover()` 补 9 个 SCL 脉冲自愈 + TCA9554 全部 EXIO 拉高释放复位** |
+| TCA9554 扩展 `cira_expander.py` | ✅ 真机验证通过 | 0x20, 释放 CST816 RST(EXIO1)/LCD RST(EXIO2); 上电默认全输入(等效复位态), 必须开机 `init(0xFF)` |
+| 音频 `cira_audio.py` | ✅ 真机验证通过 | ES8311 I2S1(TX) + PA GPIO15 + MCLK PWM GPIO2(4.096MHz); 16k 16bit 单声道 WAV 直喂 I2S; 防音爆铁律: 功放 warmup 只开一次常开, 出声靠 DAC 静音位切换 |
+| 唤醒 `cira_wake.py` + `verify_wake.py` | ✅ 真机验证通过 | **硬件本地唤醒**: 点按→随机播"我在。/哎！"(`wake_wo.wav`/`wake_ai.wav`, 由用户 m4a/mp3 经 afconvert 转 16k 单声道 WAV)→ 不进模型; 播完才 `voice_turn` 发模型侧. 全链路: 本地唤醒音频 + 模型应答音频均经 ES8311 出声 |
 
 ## 5. 协议（与模型侧桥接层对齐，无需改）
 
@@ -86,3 +87,34 @@ TURN 2 | ... happy | audio_len=21392
 2. 触摸 CST816T（ref_cst816.py）
 3. 音频 ES8311（ref_es8311/es7210/audio_out.py）
 4. 唤醒：触摸+本地预录音频高优先级打断
+
+## 7. 真机验证记录（2026-08-08 晚 · v0.8.2 唤醒里程碑）
+
+**新增文件**：`cira_pins.py`(引脚) / `mclk.py`(MCLK PWM) / `cira_i2c.py`(共享 I2C0+总线自愈) /
+`cira_codec.py`(ES8311) / `cira_audio.py`(播放) / `cira_touch.py`(CST816) / `cira_expander.py`(TCA9554) /
+`cira_wake.py`(本地唤醒) / `verify_wake.py`(验证) / `wake_wo.wav`+`wake_ai.wav`(用户预录应答, 转 16k 单声道 WAV)。
+
+**关键坑 & 修复**：
+1. **唤醒应答是硬件本地、不进模型**（用户确认的设计）：点按→本地随机播"我在。/哎！"→
+   才发 `voice_turn` 给模型侧。延迟≈0 且能打断 SPEAKING。
+2. **I2C 总线锁死**：CST816/ES8311 偶发传完不释放 SDA → 后续事务 `ENODEV`。修复：
+   `cira_i2c.recover()` 补 9 个 SCL 脉冲自愈 + 重建 I2C，驱动读写重试里调用。
+3. **CST816 复位门控**：TCA9554(0x20) 上电默认全 EXIO 输入（等效复位态），必须
+   `init(0xFF)` 把全部 EXIO 设输出高释放；且 CST816 RST 走 GPIO1 需复位脉冲。
+4. **I2C 总线选 I2C(0)**（GPIO10/11, 100kHz），原厂固件统一用 I2C(0)；CST816 仅在此稳定应答。
+5. **音频格式**：用户 `哎.m4a`/`我在.mp3` 经 macOS `afconvert -f WAVE -d LEI16@16000 -c 1`
+   转 16k 单声道 16bit WAV，与 ES8311 I2S 播放路径一致（剥 44 字节头直喂 I2S）。
+
+**结果**（verify_wake.py / cira_main.py 实测）：
+```
+[AUDIO] warmup 完成 (功放已上电)
+[TOUCH] chip_id=0xB5 awake=True
+WiFi OK: 192.168.31.170
+[WS] 桥接层已连接
+[AUTO DEMO] 自动触发唤醒
+[WAKE 1] 播放本地应答: /wake_ai.wav      ← 本地"哎！"播出
+[REPLY 1] emotion=happy 音频播放完毕 (len=16044)   ← 模型应答也播出了
+```
+→ **CIRA 首次真机跑通"硬件本地唤醒音频 + 模型应答音频"全链路**（ES8311 出声, CST816 触摸可唤醒）。
+
+**下一步**：屏驱 ST77916 QSPI（唯一待补设备能力；显示/星云 UI 待移植 `ref_*`）。
