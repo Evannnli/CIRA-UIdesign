@@ -151,3 +151,31 @@ WiFi OK: 192.168.31.170
 **修复双击双播**：`cira_wake.wake()` + `cira_main` 唤醒动作加 2s 冷却，同一点触只播一个应答（"哎！"或"我在。"二选一）。
 **字幕**：设备已有 `subtitle_font.py`，中文全字库字幕可显示；缺字体时降级跳过兜底。
 
+## 9. 真机验证记录（2026-08-08 深夜 · v0.8.5 点按崩溃修复）
+
+**现象**：v0.8.4 设成开机固件后，用户反馈"黑屏 / 点不动唤不醒 / 卡住不动"（红圈是更早未设主固件时的残留观感）。
+
+**根因**：`cira_main.py` 唤醒块第 135 行 `NameError: local variable referenced before assignment`。
+`_LAST_WAKE_MS` 在 `main()` 内先读(135)后写(136) → Python 视其为函数局部变量 → **一点按就抛异常崩掉主循环**。
+v0.8.4 的"无 traceback"只在待机态验证过，点按路径从没实测，所以漏了。
+
+**修复**：
+1. `main()` 加 `global _LAST_WAKE_MS`；
+2. 整个唤醒块包 `try/except`，主循环永不死；
+3. **睡眠不再全黑**：`_blit_kernel` 睡眠时跳过渲染，原 `screen_off()` 全黑易被当"坏了"；改 `set_nit(SLEEP_NIT=40)` 微暗呼吸（creature 继续呼吸），唤醒恢复 `WAKE_NIT=255`；
+4. 睡眠超时 10s→30s；初始 `set_nit(255)` 全亮。
+
+**验证**（打桩 `is_touched` 模拟一次点按，跑真实 `main()`）：
+```
+[DISP] 光生命体就绪 (canvas 360x360)
+[TOUCH] chip_id=0xB5 awake=True
+[WS] 桥接层已连接
+[WAKE] 本地应答: /wake_wo.wav          ← 唤醒块执行，不再 NameError
+[REPLY] emotion=happy 播放完毕          ← 模型应答音频也正常播
+```
+点按链路零异常，本地随机应答 + WS 模型回复全通。
+
+⚠️ **推送必记坑**：mpremote `fs cp` **覆盖已存在的 `:main.py` 会静默失败**（boot 进程占着）。
+正确姿势：`fs rm :main.py` → `fs cp <本地> :main.py`（此时是"新建"能落盘）。
+推到新文件名(如 `:_newmain.py`)可验证写入是否生效，再 `fs cp :_newmain.py :main.py` 也行。
+
