@@ -29,10 +29,12 @@ Evan 的原话是"扒一套成熟的下来稍作改造"。LVGL 是嵌入式 GUI 
 
 ST77916 是 **360×360 圆屏 QSPI 非标驱动**，标准 lv_micropython 不含。LVGL 要把渲染结果送到屏上，必须提供一个 `flush_cb(disp, area, color_p)`，把 `area` 这块矩形区域的 RGB565 像素推到面板。
 
-两种接法：
+**研究后纠正（2026-08-10）**：ST77916 驱动是 **C 写的 ESP-IDF 组件**（`esp_lcd_st77916`，走硬件 QSPI/LCD_CAM），板子固件里的 `st77916` 是一个**包了这层 C 驱动的 MicroPython C 扩展模块**——**不是能直接丢进去的 `.py` 文件**。所以「加个 frozen py 模块」的设想不成立。
 
-- **A. 构建侧**：在本机 `lv_micropython` 构建里把 `st77916` 加为 frozen/用户模块 → flush_cb 直接调 `st77916.blit(buf, x0,y0,w,h)`。最干净，但需要本机 ESP-IDF 构建链。
-- **B. 纯 Python 侧**：用 SPI 直接写 ST77916 的 `set_window`+`write`（不依赖 frozen 模块），在 Python 里实现 flush_cb。无需改构建，但 flush 性能需实测。
+已落实的做法（见 `micropython/lvgl_build/`）：写一个**自包含 C 扩展模块 `cira_st77916`**，只用 ESP-IDF 自带的 `esp_lcd` + 本仓库已验证的 181 条初始化序列（`st77916_init.py`），自己实现 `init/blit/on/off/fill/set_nit`，经 `USER_C_MODULES` 编进 lv_micropython。flush_cb 调 `st77916.blit(buf, x0,y0,w,h)`。
+
+- **方案 A（已落地代码，用户 2026-08-10 选定全力执行）**：本机装 ESP-IDF → 编 lv_micropython（含 cira_st77916）→ 烧录。需要本机编译链，完整步骤见 `micropython/lvgl_build/README.md`。
+- **方案 B（轻量验证，v0.8.8 已实施）**：不编译 LVGL，继续用现有小智固件的 Python 上层（取消星云限帧 + 控制中心脏区刷新）。零成本，但 Nebula 仍是 Python 算、顺滑度上限有限，作为路线 A 太重时的兜底。
 
 **先验证**：刷 lv_micropython → 跑 `tools/lvgl_hello.py` → 确认 (1) LVGL 能 `import` 并跑起 timer；(2) 圆屏能点亮（先用 dummy flush 证明 LVGL 在跑，再接 ST77916）。这一步不过，后面都是空谈。
 
@@ -42,7 +44,7 @@ ST77916 是 **360×360 圆屏 QSPI 非标驱动**，标准 lv_micropython 不含
 
 ## 3. 分阶段（状态：2026-08-09）
 
-- **阶段 0（spike，用户本机）**：刷 lv_micropython，跑 `tools/lvgl_hello.py`，确认 LVGL 跑通 + 圆屏点亮。→ 定 A/B 方案。**⏳ 待 Evan 本机跑探针并反馈现象。**
+- **阶段 0（spike，用户本机）**：刷 lv_micropython（含 cira_st77916），跑 `tools/lvgl_hello.py`，确认 LVGL 跑通 + 圆屏点亮。**Evan 已 2026-08-10 选定全力方案 A，构建物料已就绪（cira_st77916 C 模块 + README），待本机执行编译/烧录。**
 - **阶段 1（代码已写）**：`micropython/cira_lvgl_display.py` —— ST77916 ↔ LVGL flush_cb（方案 A：frozen st77916 真实 blit；降级 dummy）。与探针同款 v9 API。
 - **阶段 2（代码已写 + Mac 数学已验证）**：`micropython/cira_lvgl_lifeform.py` —— 复用 `cira_lifeform` 全部数学/配色，渲染进 RGB565 缓冲，由调用方注入 `commit` 钩子推到 LVGL canvas。`tools/test_lvgl_lf_smoke.py` 六态渲染通过。
 - **阶段 3（代码已写）**：`micropython/cira_lvgl_control_center.py` —— **canvas 方案**（非原生 widgets，原因见 §7），复用 `cira_control_center` 已验证像素绘制 + 状态机，仅换 LVGL canvas 表面。
@@ -52,45 +54,24 @@ ST77916 是 **360×360 圆屏 QSPI 非标驱动**，标准 lv_micropython 不含
 
 ---
 
-## 4. 两条路线与具体本机步骤（先读再决定）
+## 4. 方案 A 实施（用户 2026-08-10 选定，全力执行）
 
-核心洞察：**当前 LVGL 方案里星云仍是 Python 算的**，LVGL 只负责「把 canvas 缓冲顺滑合成到屏」。所以：
-- LVGL 化对「控制中心一帧一帧 / UI 过渡」改善明显；
-- 对「星云雷达图闪烁」改善有限（瓶颈在 Python 数学，与下方路线 B 同一瓶颈）。
-真正让星云也 GPU 加速，需把星云改成 LVGL 原生图元（更复杂，非当前 `cira_lvgl_*` 方案）。
+> 核心洞察不变：当前 LVGL 方案里**星云仍是 Python 算的**，LVGL 主要救「控制中心顺滑度 / UI 过渡」，直接改善星云「雷达图闪烁」有限（瓶颈在 Python 数学）。但用户已决定全力走 A，拿到真正 LVGL 运行时。
 
-因此给出两条路，**强烈建议先走路线 B 验证（零成本、当天出结论）**：
+### 主干（完整、可复制命令见 `micropython/lvgl_build/README.md`）
 
-### 路线 A：编译 lv_micropython（真·LVGL 固件）——门槛高
-适合：路线 B 仍不够顺，或你想用 LVGL 原生控件/字体。
+1. **装 ESP-IDF**（Mac，约 1.5GB）：版本必须匹配 lv_micropython 要求（克隆后看 `ports/esp32/README.md`），`install.sh esp32s3` + `. ./export.sh`。
+2. **取源码**：`git clone --recursive https://github.com/lvgl/lv_micropython.git && cd lv_micropython && git submodule update --init --recursive lib/lv_bindings && make -C mpy-cross`。
+3. **接 cira_st77916**：`export CIRA_ST77916=/abs/cira-prototype/micropython/lvgl_build/cira_st77916`，构建时 `USER_C_MODULES=$CIRA_ST77916` 自动纳入（见 `cira_st77916/micropython.mk`）。本模块**自包含**，只用 ESP-IDF 自带 `esp_lcd` + 已验证的 181 条初始化序列，不依赖外部 `esp_lcd_st77916` 组件。
+4. **编译 + 烧录**：`make -C ports/esp32 BOARD=GENERIC_S3 USER_C_MODULES=$CIRA_ST77916 LV_CFLAGS="-DLV_COLOR_DEPTH=16 -DLV_COLOR_16_SWAP=0" deploy`（烧前先 `read_flash` 整片备份原厂固件）。
+5. **推 CIRA 的 Python 文件**：`cira_pins/cira_expander/cira_lvgl_display/cira_lvgl_lifeform/cira_lvgl_control_center` 推上板；`cira_main_lvgl.py` 推成 `:main.py`（先 `fs rm` 防静默失败）。
+6. **跑探针**：`mpremote connect /dev/cu.usbmodem101 run tools/lvgl_hello.py` → 圆屏出 `CIRA · LVGL` 即全链路通。
+7. **反馈现象给我** → 若编译/运行报错（最常见：颜色字节序、`MP_DEFINE_CONST_OBJ_TYPE` 宏名、`esp_lcd` 头缺失），据此改 `cira_st77916/st77916.c` 重编。
 
-1. **装 ESP-IDF**（Mac）：按 Espressif 官方文档装（约 1.5GB），`get_idf` / 运行 `install.sh` + `. ./export.sh` 激活环境。
-2. **取源码**：`git clone --recursive https://github.com/lvgl/lv_micropython.git && cd lv_micropython`
-3. **进端口**：`cd ports/esp32`
-4. **把 ST77916 加为 frozen module（方案 A 关键）**：从本仓库 `cira-prototype/backups/`（或板子备份）取 `st77916.py`，放进 `modules/st77916/`，在板级 `manifest.py`（GENERIC_S3）注册；并在 `mpconfigboard.h` 定义屏参（360×360、QSPI 引脚，参考 `backups/st77916_init.py`）。**这步不做 → LVGL 跑起来屏是黑的。**
-5. **编译**：`make BOARD=GENERIC_S3`（octal-SPIRAM 板用 `BOARD=GENERIC_S3/spiram_oct`）。产出 `build-GENERIC_S3/firmware.bin`。首次编译 10~30 分钟。
-6. **备份原固件**：`mpremote connect /dev/cu.usbmodem101 fs cp :main.py :main_cira_backup.py`
-7. **擦除 + 烧录**：
-   `esptool.py --chip esp32s3 --port /dev/cu.usbmodem101 --baud 460800 erase_flash`
-   `esptool.py --chip esp32s3 --port /dev/cu.usbmodem101 --baud 460800 write_flash -z 0 build-GENERIC_S3/firmware.bin`
-8. **跑探针**：`mpremote connect /dev/cu.usbmodem101 run tools/lvgl_hello.py` → 看现象（§8 清单）。
-9. **反馈现象给我** → 校正 LVGL 版本/flush → 刷 `cira_main_lvgl.py`。
+### 路线 B（兜底，v0.8.8 已实施，零编译）
+若路线 A 编译太重或卡住，可退回 v0.8.8 的纯 Python 轻量顺滑化（取消星云限帧 + 控制中心脏区刷新，`mpremote` 直接推，见 §10）。功能完整、可随时回退。
 
-> 门槛：ESP-IDF 安装 + 编译耗时、ST77916 frozen 接入需处理屏参/引脚，可能踩坑。若无编译经验，难度不低。
-
-### 路线 B：现有固件轻量顺滑化（零编译，强烈建议先试）✅ 已实施 v0.8.8（改动见 §10）
-现有小智 MicroPython 固件**已含 ST77916 frozen（硬件 QSPI 加速 blit）**，我们只是上层 Python。改动全在 Python 层，可 `mpremote` 直接推送，**零风险、当天出结果**。
-
-1. **星云取消限帧**：编辑 `micropython/cira_lifeform.py`，把 `_interval`（当前 220ms≈4.5fps）调到 `40~50`（≈20~25fps）或 `0`（每帧）。看 ESP32-S3 裸跑星云能到多少 fps、是否还「闪烁」。
-2. **控制中心脏区刷新**：改 `cira_control_center.py`，避免整屏 `fill_rect`，只重绘变化区域（滑块拖动/数值变化时局部重绘）。这直接消灭「一帧一帧」。
-3. **推送验证**：`mpremote connect /dev/cu.usbmodem101 fs cp micropython/cira_lifeform.py :cira_lifeform.py`（同理推 control_center），然后 `mpremote connect /dev/cu.usbmodem101 reset`（或断电重启）。
-4. **观察**：若星云 + 控制中心在现有固件上就「够顺」→ **不必编译 LVGL**，直接收尾 v0.8.x，省下路线 A 的大门槛。
-
-### 决策建议
-- **先 B**：零成本、此刻就能验证瓶颈到底在哪。若 B 够顺 → 项目提前收尾，无需 LVGL。
-- **B 不够** → 再投入 A（真 LVGL，用 C 合成 + 后续把星云也改 LVGL 图元做 GPU 加速）。
-
-> 无论走哪条，现有 MicroPython 固件功能完整（音频/WS/唤醒已验证），`main_xiaozhi.py` 已备份，迁移零风险、可随时回退。
+> 现有 MicroPython 固件功能完整（音频/WS/唤醒已验证），`main_xiaozhi.py` 已备份，迁移可随时回退。
 
 ---
 
@@ -131,7 +112,7 @@ LVGL **默认字体只含 ASCII**，本板中文靠 `subtitle_font` 点阵（12p
 
 Evan 本机跑 `tools/lvgl_hello.py` 后，按现象修这些点：
 1. **LVGL 版本**：探针打印 `version: x.y.z`。若 v8 → 本仓库 `cira_lvgl_*` 的 display/canvas API 需按 v8 改写（文件内已留注释）。
-2. **ST77916 flush**：圆屏出 `CIRA · LVGL` = 方案 A 成功；黑屏无报错 = `bytes(color_p, size)` 地址转换需调（试 `memoryview`/直接传 `color_p`）；`import st77916` 失败 = 走方案 B（纯 Python SPI flush，需另写）。
+2. **ST77916 flush**：圆屏出 `CIRA · LVGL` = 方案 A 成功；黑屏无报错 = flush 的 `color_p` 地址转换问题（已改用 `uctypes.bytearray_at`，若仍黑屏查 RGB565 字节序 / 屏方向 `madctl`）；`import st77916` 失败 = cira_st77916 模块没编进固件（`USER_C_MODULES` 路径/构建报错）。
 3. **canvas 缓冲**：`lv.canvas.set_buffer(buf, 360,360, RGB565)` + `invalidate()` 在目标固件是否可用（v9 确认；v8 用 `lv_canvas_set_buffer`）。
 4. **圆屏裁切**：LVGL 方缓冲 → 硬件圆窗遮罩即可；若要 LVGL 内做圆角，用 `lv.obj.set_style_radius(180)` 近似。
 5. **效能**：星云渲染间隔 `_interval`（默认 70ms≈14fps）；算力吃紧就调大到 100~150ms，或降 `scale`。

@@ -39,12 +39,27 @@ def _make_st77916_flush(st):
         h = y1 - y0 + 1
         size = w * h * 2
         try:
-            buf = bytes(color_p, size)          # color_p 是内存地址(int)
+            # lv_micropython v9 的 color_p 是内存地址(int)；部分版本直接给 buffer。
+            # 统一成可读缓冲交给 st.blit。
+            buf = _color_p_to_buf(color_p, size)
             st.blit(buf, x0, y0, w, h)
         except Exception as ex:
             print("[LVGL] st77916.blit 异常:", ex)
         lv.display_flush_ready(disp)
     return _flush
+
+
+def _color_p_to_buf(color_p, size):
+    """把 flush_cb 的 color_p 转成可读缓冲（兼容 int 地址与直接 buffer 两种形态）。"""
+    if isinstance(color_p, int):
+        import uctypes
+        return uctypes.bytearray_at(color_p, size)
+    # 已是 memoryview/bytearray 等可缓冲对象
+    try:
+        import uctypes
+        return uctypes.bytearray_at(int(color_p), size)
+    except Exception:
+        return color_p
 
 
 def init_lvgl_display():
