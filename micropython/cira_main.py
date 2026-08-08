@@ -2,8 +2,9 @@
 # v0.8.3 显示 bring-up：ST77916 圆形 TFT + 光生命体星云（frozen st77916 驱动）。
 # 交互: 点按屏幕 → 本地随机播"我在。/哎！"(硬件本地, 不进模型, 可打断当前播放)
 #        → 发 voice_turn 给桥接层 → 播模型应答音频(ES8311 I2S) + 光生命体变表情。
-# 不覆盖 Xiaozhi main.py; 运行:  mpremote connect /dev/cu.usbmodem101 run cira_main.py
-# （要做成板子主固件：把本文件 cp 为 main.py 并备份原 main.py 即可，可回退。）
+# 可作为板子主固件：先备份原厂 main.py（fs cp :main.py :main_xiaozhi.py），
+# 再把本文件 cp 为 main.py（fs cp :cira_main.py :main.py），reset 即生效；回退反之。
+# 调试时也可临时运行: mpremote connect /dev/cu.usbmodem101 run cira_main.py
 import time
 import _thread
 import network
@@ -34,6 +35,10 @@ STATE_IDLE, STATE_LISTENING, STATE_THINKING, STATE_SPEAKING, STATE_SLEEP = \
     "idle", "listening", "thinking", "speaking", "sleep"
 SLEEP_TIMEOUT_MS = 10000   # 无交互 10s 熄屏（耳朵仍醒着，点按即唤醒）
 
+# 单次唤醒冷却（防抖动点触把"哎！"和"我在。"都播出来，也防重复发模型）
+_LAST_WAKE_MS = -10000
+WAKE_COOLDOWN_MS = 2000
+
 # 状态 → 光生命体态（lifeform STATE_PROFILE 用 listen/think/speak/idle/wake）
 _LF_STATE = {
     STATE_IDLE: "idle", STATE_LISTENING: "listen",
@@ -47,7 +52,7 @@ def connect_wifi():
     if not w.isconnected():
         print("WiFi 连接", WIFI_SSID, "...")
         w.connect(WIFI_SSID, WIFI_PASS)
-        for _ in range(30):
+        for _ in range(15):
             if w.isconnected():
                 break
             time.sleep(1)
@@ -126,27 +131,33 @@ def main():
         if pressed and not was:
             was = True
             # 唤醒（最高优先级打断）: 本地随机播"我在。/哎！"，不进模型
-            fname = cira_wake.wake()
-            print("[WAKE] 本地应答:", fname)
-            ui_state(STATE_LISTENING, "我在听…")
-            last = now
-            if ws:
-                try:
-                    r = ws.voice_turn(transcript="你好，西拉")
-                    a = r.get("audio")
-                    emo = r.get("emotion")
-                    ui_state(STATE_SPEAKING, r.get("reply") or "")
-                    if lf is not None and emo:
-                        lf.set_emotion(emo)
-                    if a:
-                        cira_audio.play_wav(b64decode(a))
-                        print("[REPLY] emotion=%s 播放完毕" % emo)
-                    ui_state(STATE_IDLE, "")
-                    state = STATE_IDLE
-                except Exception as e:
-                    print("[ERR]", e)
-                    ui_state(STATE_IDLE, "")
-                    state = STATE_IDLE
+            # 整个唤醒动作（应答+发模型）加 2s 冷却，防抖动点触重复触发
+            if time.ticks_diff(now, _LAST_WAKE_MS) >= WAKE_COOLDOWN_MS:
+                _LAST_WAKE_MS = now
+                fname = cira_wake.wake()
+                print("[WAKE] 本地应答:", fname)
+                ui_state(STATE_LISTENING, "我在听…")
+                last = now
+                if ws:
+                    try:
+                        r = ws.voice_turn(transcript="你好，西拉")
+                        a = r.get("audio")
+                        emo = r.get("emotion")
+                        ui_state(STATE_SPEAKING, r.get("reply") or "")
+                        if lf is not None and emo:
+                            lf.set_emotion(emo)
+                        if a:
+                            cira_audio.play_wav(b64decode(a))
+                            print("[REPLY] emotion=%s 播放完毕" % emo)
+                        ui_state(STATE_IDLE, "")
+                        state = STATE_IDLE
+                    except Exception as e:
+                        print("[ERR]", e)
+                        ui_state(STATE_IDLE, "")
+                        state = STATE_IDLE
+            else:
+                # 冷却中：忽略这次抖动点触（避免"哎"+"我在"都播）
+                pass
 
         if not touch.is_touched():
             was = False
