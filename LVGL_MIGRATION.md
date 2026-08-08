@@ -2,6 +2,8 @@
 
 > 最后更新：2026-08-09 ｜ 决策：UI/星云顺滑度问题改用 **LVGL（同硬件 ESP32-S3-Touch-LCD-1.85C-BOX V2）**。
 > 实现方式：**lv_micropython**（MicroPython + LVGL 官方绑定）——保持 Python，复用现有音频/WS/触摸/主循环，仅替换"显示 + UI 渲染层"。
+>
+> ⚠ **2026-08-09 夜 重要更正**：经检索确认，**官方/第三方都没有现成的 lv_micropython 预编译固件可直接下载**——MicroPython 官网只提供标准固件（不含 LVGL），第三方带 LVGL 的固件（如果云三合一）屏驱是 ST7789 硬编码、不适配我们的 ST77916 圆屏。因此"刷 lv_micropython 固件"必须先 **ESP-IDF 自行编译**（门槛较高）。据此修订 §4 为「两条路线」，请先读 §4 再决定。
 
 ---
 
@@ -34,6 +36,8 @@ ST77916 是 **360×360 圆屏 QSPI 非标驱动**，标准 lv_micropython 不含
 
 **先验证**：刷 lv_micropython → 跑 `tools/lvgl_hello.py` → 确认 (1) LVGL 能 `import` 并跑起 timer；(2) 圆屏能点亮（先用 dummy flush 证明 LVGL 在跑，再接 ST77916）。这一步不过，后面都是空谈。
 
+> ⚠ **关于"刷固件"的现实**：本仓库的探针（`tools/lvgl_hello.py`）是**假设板上已有一份含 LVGL 的固件**。这份固件必须自己用 ESP-IDF 编译（见 §4 路线 A）或找到适配 ST77916 的第三方固件——这是本迁移最大的前置门槛，请先评估是否走路线 A。
+
 ---
 
 ## 3. 分阶段（状态：2026-08-09）
@@ -48,11 +52,45 @@ ST77916 是 **360×360 圆屏 QSPI 非标驱动**，标准 lv_micropython 不含
 
 ---
 
-## 4. 构建 / 烧录（用户本机，沙盒无工具链）
+## 4. 两条路线与具体本机步骤（先读再决定）
 
-- 优先用 lv_micropython 的 **ESP32-S3 通用预构建**（若有）；否则本机 `make BOARD=...` 构建带 st77916 的版本。
-- 备份当前 `main.py` 为 `main_cira_backup.py`，原厂固件已备份为 `main_xiaozhi.py`。
-- 烧录后用 `mpremote run tools/lvgl_hello.py` 跑探针。
+核心洞察：**当前 LVGL 方案里星云仍是 Python 算的**，LVGL 只负责「把 canvas 缓冲顺滑合成到屏」。所以：
+- LVGL 化对「控制中心一帧一帧 / UI 过渡」改善明显；
+- 对「星云雷达图闪烁」改善有限（瓶颈在 Python 数学，与下方路线 B 同一瓶颈）。
+真正让星云也 GPU 加速，需把星云改成 LVGL 原生图元（更复杂，非当前 `cira_lvgl_*` 方案）。
+
+因此给出两条路，**强烈建议先走路线 B 验证（零成本、当天出结论）**：
+
+### 路线 A：编译 lv_micropython（真·LVGL 固件）——门槛高
+适合：路线 B 仍不够顺，或你想用 LVGL 原生控件/字体。
+
+1. **装 ESP-IDF**（Mac）：按 Espressif 官方文档装（约 1.5GB），`get_idf` / 运行 `install.sh` + `. ./export.sh` 激活环境。
+2. **取源码**：`git clone --recursive https://github.com/lvgl/lv_micropython.git && cd lv_micropython`
+3. **进端口**：`cd ports/esp32`
+4. **把 ST77916 加为 frozen module（方案 A 关键）**：从本仓库 `cira-prototype/backups/`（或板子备份）取 `st77916.py`，放进 `modules/st77916/`，在板级 `manifest.py`（GENERIC_S3）注册；并在 `mpconfigboard.h` 定义屏参（360×360、QSPI 引脚，参考 `backups/st77916_init.py`）。**这步不做 → LVGL 跑起来屏是黑的。**
+5. **编译**：`make BOARD=GENERIC_S3`（octal-SPIRAM 板用 `BOARD=GENERIC_S3/spiram_oct`）。产出 `build-GENERIC_S3/firmware.bin`。首次编译 10~30 分钟。
+6. **备份原固件**：`mpremote connect /dev/cu.usbmodem101 fs cp :main.py :main_cira_backup.py`
+7. **擦除 + 烧录**：
+   `esptool.py --chip esp32s3 --port /dev/cu.usbmodem101 --baud 460800 erase_flash`
+   `esptool.py --chip esp32s3 --port /dev/cu.usbmodem101 --baud 460800 write_flash -z 0 build-GENERIC_S3/firmware.bin`
+8. **跑探针**：`mpremote connect /dev/cu.usbmodem101 run tools/lvgl_hello.py` → 看现象（§8 清单）。
+9. **反馈现象给我** → 校正 LVGL 版本/flush → 刷 `cira_main_lvgl.py`。
+
+> 门槛：ESP-IDF 安装 + 编译耗时、ST77916 frozen 接入需处理屏参/引脚，可能踩坑。若无编译经验，难度不低。
+
+### 路线 B：现有固件轻量顺滑化（零编译，强烈建议先试）
+现有小智 MicroPython 固件**已含 ST77916 frozen（硬件 QSPI 加速 blit）**，我们只是上层 Python。改动全在 Python 层，可 `mpremote` 直接推送，**零风险、当天出结果**。
+
+1. **星云取消限帧**：编辑 `micropython/cira_lifeform.py`，把 `_interval`（当前 220ms≈4.5fps）调到 `40~50`（≈20~25fps）或 `0`（每帧）。看 ESP32-S3 裸跑星云能到多少 fps、是否还「闪烁」。
+2. **控制中心脏区刷新**：改 `cira_control_center.py`，避免整屏 `fill_rect`，只重绘变化区域（滑块拖动/数值变化时局部重绘）。这直接消灭「一帧一帧」。
+3. **推送验证**：`mpremote connect /dev/cu.usbmodem101 fs cp micropython/cira_lifeform.py :cira_lifeform.py`（同理推 control_center），然后 `mpremote connect /dev/cu.usbmodem101 reset`（或断电重启）。
+4. **观察**：若星云 + 控制中心在现有固件上就「够顺」→ **不必编译 LVGL**，直接收尾 v0.8.x，省下路线 A 的大门槛。
+
+### 决策建议
+- **先 B**：零成本、此刻就能验证瓶颈到底在哪。若 B 够顺 → 项目提前收尾，无需 LVGL。
+- **B 不够** → 再投入 A（真 LVGL，用 C 合成 + 后续把星云也改 LVGL 图元做 GPU 加速）。
+
+> 无论走哪条，现有 MicroPython 固件功能完整（音频/WS/唤醒已验证），`main_xiaozhi.py` 已备份，迁移零风险、可随时回退。
 
 ---
 
