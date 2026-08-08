@@ -78,7 +78,7 @@ ST77916 是 **360×360 圆屏 QSPI 非标驱动**，标准 lv_micropython 不含
 
 > 门槛：ESP-IDF 安装 + 编译耗时、ST77916 frozen 接入需处理屏参/引脚，可能踩坑。若无编译经验，难度不低。
 
-### 路线 B：现有固件轻量顺滑化（零编译，强烈建议先试）
+### 路线 B：现有固件轻量顺滑化（零编译，强烈建议先试）✅ 已实施 v0.8.8（改动见 §10）
 现有小智 MicroPython 固件**已含 ST77916 frozen（硬件 QSPI 加速 blit）**，我们只是上层 Python。改动全在 Python 层，可 `mpremote` 直接推送，**零风险、当天出结果**。
 
 1. **星云取消限帧**：编辑 `micropython/cira_lifeform.py`，把 `_interval`（当前 220ms≈4.5fps）调到 `40~50`（≈20~25fps）或 `0`（每帧）。看 ESP32-S3 裸跑星云能到多少 fps、是否还「闪烁」。
@@ -104,8 +104,9 @@ ST77916 是 **360×360 圆屏 QSPI 非标驱动**，标准 lv_micropython 不含
 
 ## 6. 当前固件状态（迁移基线）
 
-- 当前板载固件 = v0.8.7（星云柔光软斑 + 控制中心重写对齐 HTML 原型），音频/WS/唤醒链路已验证可用。
+- **稳定基线 = v0.8.7**（星云柔光软斑 + 控制中心重写对齐 HTML 原型），音频/WS/唤醒链路已验证可用。
 - 已知缺陷（推动本次迁移）：星云 ~4.5fps 纯 Python 像素运算 → 像雷达图闪烁；控制中心全屏 `fill_rect` 重绘无过渡 → 一帧一帧。根因均为"纯 MicroPython 无 GPU/合成器"。
+- **路线 B 实验版 = v0.8.8**（2026-08-09 已实施，零编译）：星云取消限帧(`_interval=0`)+控制中心拖动局部刷新。改动在 `cira_lifeform.py`/`cira_main.py`/`cira_control_center.py`，Mac 桩 `tools/test_route_b.py` 通过（星云每帧 blit、局部刷新 fill_rect 97→17 次）。**待 Evan 本机 `mpremote` 推送验证真机顺滑度**。若够顺 → 项目提前收尾，无需路线 A。
 
 ---
 
@@ -143,3 +144,32 @@ Evan 本机跑 `tools/lvgl_hello.py` 后，按现象修这些点：
 - 星云数学移植 `tools/test_lvgl_lf_smoke.py` 六态渲染 Mac 桩通过（LVGL 无关部分已验证）。
 - LVGL 迁移文档（本文件）与运行时入口（`cira_main_lvgl.py`）就绪。
 - **下一步动作在 Evan 本机**：跑阶段0探针 → 反馈现象 → 据此校正 API → 刷 `cira_main_lvgl.py`。
+
+---
+
+## 10. 路线 B 实施记录（v0.8.8，2026-08-09）
+
+**决策**：Evan 选「先走 B」——零编译、当天验证现有固件能否够顺，再决定是否投入路线 A（LVGL 编译）。
+
+**改动（均 MicroPython 上层，不碰硬件驱动）**：
+1. `cira_lifeform.py`：`self._interval` 由 `220`（~4.5fps 限帧）改为 `0`（取消限帧，每帧渲染）。根治星云「雷达图光点闪烁」——位置连续移动而非每 220ms 跳变。注释说明若真机太卡可回调 `33`/`40`。
+2. `cira_main.py`：后台动画线程 `sleep_ms(40)` 改为 `sleep_ms(16)`，把帧率上限从 ~25fps 放宽到 ~60fps（实际由每帧渲染耗时决定）。
+3. `cira_control_center.py`：新增 `_clear_rect`（底色覆盖矩形）+ `_redraw_sub_dynamic`（子视图拖动时只重绘「大数值区 + 滑块区」，不动标题/提示）；子视图拖动分支由整屏 `_redraw` 改为局部刷新。**根治控制中心拖动「整屏闪」**。
+
+**沙盒验证（Mac 桩 `tools/test_route_b.py`，无需硬件）**：
+- 星云：构造后连续 `tick(0/50/100...)`，`_interval==0` 成立，每帧都 `blit`，六态切换无异常。
+- 控制中心：整屏 `redraw` 触发 `fill_rect` **97 次**；局部 `_redraw_sub_dynamic` 仅 **17 次**（≈18%）。调用次数≈SPI 交易次数，局部刷新交易少一个数量级 → 拖动更顺。
+
+**已知局限（路线 B 无法根除，若仍不够顺则走路线 A）**：
+- 控制中心文字仍是「逐像素 `fill_rect` 字模」（每次 `_draw_glyph` 每像素一次 SPI 写）。局部刷新减少了重绘范围，但单次文字绘制的像素级调用仍在。根治需「字模缓冲 → 一次 `blit`」（改动较大，是路线 B 第二步，或在 LVGL 路线 A 用原生字体解决）。
+- 星云仍是 Python 数学，取消限帧后帧率受渲染耗时上限（ESP32-S3 裸跑预计 20~30fps，非 60fps）。真·60fps 需 LVGL 原生图元（路线 A 进阶）。
+
+**Evan 本机验证步骤（推送 v0.8.8）**：
+```
+# 确保 Thonny 已断开释放串口（Cmd+Shift+D 或退出）
+mpremote connect /dev/cu.usbmodem101 fs cp micropython/cira_lifeform.py :cira_lifeform.py
+mpremote connect /dev/cu.usbmodem101 fs cp micropython/cira_main.py      :cira_main.py
+mpremote connect /dev/cu.usbmodem101 fs cp micropython/cira_control_center.py :cira_control_center.py
+mpremote connect /dev/cu.usbmodem101 reset
+```
+观察：星云是否连续呼吸不闪、控制中心拖动是否局部刷不整屏闪。若够顺 → 收尾；若仍卡 → 反馈，我接路线 A 或做字模缓冲 blit 第二步。

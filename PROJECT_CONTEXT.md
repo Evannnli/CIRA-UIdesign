@@ -2,7 +2,7 @@
 
 > 项目传承文档。跨模型 / 跨会话 / 跨电脑防断片。接手第一件事：先读本文件。
 >
-> **最后更新：2026-08-09** ｜ 对应产物：`cira-prototype` Web 原型 **v0.7** + HARDWARE.md + HANDOFF v0.7 + MODULE_INTERFACES v0.7 同步 ｜ **Device Runtime `v0.8.7`（硬件目标 ESP32-S3-Touch-LCD-1.85C-BOX / V2）星云重做 + 控制中心重写对齐 HTML 原型** ｜ **`v0.9` LVGL 迁移启动（阶段1-4 代码已写，待 Evan 本机阶段0探针）**：见 `LVGL_MIGRATION.md` ｜ 模块1/2 契约差异由「适配桥接层」兜住（MODULE_INTERFACES §10）
+> **最后更新：2026-08-09** ｜ 对应产物：`cira-prototype` Web 原型 **v0.7** + HARDWARE.md + HANDOFF v0.7 + MODULE_INTERFACES v0.7 同步 ｜ **Device Runtime `v0.8.8`（路线 B 实验版）**：星云取消限帧(`_interval=0`)+控制中心拖动局部刷新，零编译 `mpremote` 直推，待 Evan 本机验证 ｜ `v0.8.7` 仍是稳定基线（星云柔光软斑+控制中心对齐原型）；`v0.9` LVGL 迁移代码已写待阶段0探针 ｜ 见 `LVGL_MIGRATION.md` ｜ 模块1/2 契约差异由「适配桥接层」兜住（MODULE_INTERFACES §10）
 
 ---
 
