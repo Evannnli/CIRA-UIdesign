@@ -48,6 +48,7 @@ mpremote connect /dev/cu.usbmodem101 run main.py
 | TCA9554 扩展 `cira_expander.py` | ✅ 真机验证通过 | 0x20, 释放 CST816 RST(EXIO1)/LCD RST(EXIO2); 上电默认全输入(等效复位态), 必须开机 `init(0xFF)` |
 | 音频 `cira_audio.py` | ✅ 真机验证通过 | ES8311 I2S1(TX) + PA GPIO15 + MCLK PWM GPIO2(4.096MHz); 16k 16bit 单声道 WAV 直喂 I2S; 防音爆铁律: 功放 warmup 只开一次常开, 出声靠 DAC 静音位切换 |
 | 唤醒 `cira_wake.py` + `verify_wake.py` | ✅ 真机验证通过 | **硬件本地唤醒**: 点按→随机播"我在。/哎！"(`wake_wo.wav`/`wake_ai.wav`, 由用户 m4a/mp3 经 afconvert 转 16k 单声道 WAV)→ 不进模型; 播完才 `voice_turn` 发模型侧. 全链路: 本地唤醒音频 + 模型应答音频均经 ES8311 出声 |
+| 开机固件 `main.py`=cira_main.py | ✅ 已设（2026-08-08） | `cira_main.py` 已 cp 为板子 `main.py`，上电即 CIRA 光生命体；原厂备份 `main_xiaozhi.py`，回退 `fs cp :main_xiaozhi.py :main.py`。**修复双击双播**：`cira_wake.wake()` + `cira_main` 唤醒动作加 2s 冷却，同一点触只播一个应答 |
 
 ## 5. 协议（与模型侧桥接层对齐，无需改）
 
@@ -146,7 +147,7 @@ WiFi OK: 192.168.31.170
 `cira_main.py` 已整合：开机亮 idle 光生命体、状态机→光生命体态映射、睡眠熄屏、动画后台线程。
 （本验证在 Xiaozhi 背景固件同时运行下测得 ~1.3fps；干净 CIRA boot 单渲染会更快。）
 
-**可选收尾**：把 `cira_main.py` 设为板子 `main.py`（先 `fs mv main.py main_xiaozhi.py` 备份原固件）
-即成设备主固件，通电即 CIRA。回退：`fs mv main_xiaozhi.py main.py`。
-**待补**：中文全字库字幕字体（`subtitle_font`），当前中文字幕降级跳过。
+**已完成 ✅（2026-08-08）**：`cira_main.py` 已设为板子 `main.py`（原厂备份 `main_xiaozhi.py`），上电即 CIRA 光生命体。回退：`fs cp :main_xiaozhi.py :main.py`。
+**修复双击双播**：`cira_wake.wake()` + `cira_main` 唤醒动作加 2s 冷却，同一点触只播一个应答（"哎！"或"我在。"二选一）。
+**字幕**：设备已有 `subtitle_font.py`，中文全字库字幕可显示；缺字体时降级跳过兜底。
 
