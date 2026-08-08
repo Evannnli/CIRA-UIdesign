@@ -4,10 +4,13 @@
 # 协议一致 (ws://host:8788, JSON-RPC, actions: voice_turn/respond/synthesize/wake_ack/ping)。
 # 换真桥接层只改 BRIDGE_HOST，本文件其余不动。
 #
-# 依赖 (板子 MicroPython 需含): ujson, websocket (micropython-lib)
-#   若 import 失败，板端执行: mpremote mip install websocket
+# 依赖: ujson (标准 MicroPython 自带) + 本目录 ws_native.py (原生 socket WS 客户端)
+#   不依赖板子自带的非标准 websocket 模块。
 
 import ujson
+
+# 用自写的最小 WS 客户端 (板子自带 websocket 模块无 WebSocket 类, 不可用)
+from ws_native import WebSocket
 
 # ── 接入点配置（真机验证时改成运行桥接层的主机 IP，如 192.168.31.33）──
 BRIDGE_HOST = "192.168.31.33"   # ← 这本机 IP；接模型侧时改成对应主机
@@ -23,9 +26,8 @@ class CIRABridgeClient:
         self._timeout = timeout
 
     def connect(self):
-        # websocket 来自 micropython-lib；若板子固件不含，会在此报 ImportError
-        import websocket
-        self.ws = websocket.WebSocket()
+        # 用 ws_native.WebSocket (原生 socket, 不依赖板子自带 websocket 模块)
+        self.ws = WebSocket()
         self.ws.connect(self.url, timeout=self._timeout)
         self.ws.settimeout(self._timeout)
 
