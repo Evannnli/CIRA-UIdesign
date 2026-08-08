@@ -19,9 +19,9 @@ except ImportError:
 
 from cira_ws import CIRABridgeClient
 
-# ── WiFi 配置 (用户填: 板子要连到运行桥接层的主机同一网段) ──
-WIFI_SSID = "YOUR_SSID"
-WIFI_PASS = "YOUR_PASS"
+# ── WiFi 配置 (叮当的智能家居) ──
+WIFI_SSID = "叮当的智能家居"
+WIFI_PASS = "15295601676yw"
 
 # 状态机
 STATE_IDLE, STATE_LISTENING, STATE_THINKING, STATE_SPEAKING, STATE_SLEEP = "idle", "listening", "thinking", "speaking", "sleep"
