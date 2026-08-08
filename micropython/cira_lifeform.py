@@ -83,9 +83,22 @@ CORE_W, CORE_H = 220, 256
 CORE_X0, CORE_Y0 = 70, 44
 SUB_LOCAL_Y = 2
 
-# 加色沉积核：中心亮、四邻极淡（锐利星点，非柔斑）
-_KERN = ((0, 0, 1.0), (1, 0, 0.40), (-1, 0, 0.40), (0, 1, 0.40), (0, -1, 0.40))
-_INC_SCALE = 9.0   # 单颗加色强度（板子偏暗就调大，偏白就调小）
+# 加色沉积核：柔光圆斑（径向衰减），单颗是软圆点而非硬十字/方块。
+# 原型 lifeform.js 用 radialGradient 软斑精灵；板子用预生成软核列表做加色 stamp，
+# 上千颗软圆点疏密堆叠 → 连续星云感（不再是生硬的"红点/圆"）。
+# 半径 3 ≈ 21 个非零像素，单颗成本可控；想更朦胧把 R 调到 4~5（更慢）。
+def _make_blob(R):
+    blob = []
+    for dy in range(-R, R + 1):
+        for dx in range(-R, R + 1):
+            d = math.sqrt(dx * dx + dy * dy)
+            if d <= R:
+                w = 1.0 - d / R
+                if w > 0.08:
+                    blob.append((dx, dy, w))
+    return blob
+_BLOB = _make_blob(3)
+_INC_SCALE = 14.0   # 单颗加色强度（柔斑后需调大才看得见；偏白再调小）
 
 
 def _ch(c):
@@ -280,7 +293,7 @@ class Lifeform:
         ir = int(ic * tn[0]); ig = int(ic * tn[1]); ib = int(ic * tn[2])
         if ir <= 0 and ig <= 0 and ib <= 0:
             return
-        for (dx, dy, w) in _KERN:
+        for (dx, dy, w) in _BLOB:
             self._add(buf, W, H, x + dx, y + dy, int(ir * w), int(ig * w), int(ib * w))
 
     # ── 主循环：后台线程调用 ───────────────────────────────
