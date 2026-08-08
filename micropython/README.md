@@ -41,7 +41,9 @@ mpremote connect /dev/cu.usbmodem101 run main.py
 |------|------|------|
 | 集成接缝 `cira_ws.py` | ✅ 真机验证通过 | WS 客户端, 协议本地+mock **真机均验证** (voice_turn/respond/synthesize/wake_ack/ping); 底层 `websocket` 模块非标准(无 WebSocket 类)已弃用, 改 `ws_native.py`(原生 socket 手写握手/帧) |
 | 状态机 `main.py` | ✅ 真机验证通过 | 2026-08-08 板子连 WiFi(192.168.31.170)→握手 mock(192.168.31.33:8788)→三轮 voice_turn 全过, REPL 可见完整链路; 显示/音频接好前用打印验证 |
-| 屏驱 `cira_display.py` | ⏳ 待写 | ST77916 初始化序列已抽取 (`st77916_init.py`, 181条). **风险点: ST77916 为 QSPI**, 标准 MicroPython 无 QSPI 类; 固件里屏驱是 frozen module (无 st77916.py 文件); 需从 waveshare MP 驱动移植. **Xiaozhi 参考已拉: `ref_face.py`/`ref_lifeform.py`/`ref_emotions.py`** |
+| 屏驱 `cira_display.py` | ✅ 真机验证通过 | **复用固件 frozen `st77916` 模块**（硬件 QSPI + `_blit_kernel` 加速，非位模拟）。构造 `st77916.ST77916(W,H,cs=,pclk=,d0..d3=,rst=,bl=,madctl=,invert=)`；LCD 硬复位走 **TCA9554 EXIO2** → 开机须先 `cira_expander.init()` 释放全部 EXIO。封装 `init_display()/screen_on/off()/fill()/set_nit()` |
+| 光生命体 `cira_lifeform.py` | ✅ 真机验证通过 | 星云粒子渲染器（移植 lifeform.js）：4 层 Fibonacci 球面粒子 + 加色沉积核 + 字幕合成进 220×256 中央窗缓冲，每帧一次 `blit` 刷屏。后台 `tick()` 线程按 ~1.3–4fps 呼吸。状态态 idle/wake/listen/think/speak 映射情绪色（暖橙/软粉/紫/暖白） |
+| 表情后备 `cira_face.py`+`cira_emotions.py` | ✅ 就绪 | 画布抽象 + `draw_emotion()` 静态情绪脸（旧脸模型后备）；`cira_emotions` 提供暖橙/软粉/紫/白调色板（禁高饱和蓝，对齐 Evan 视觉方向）。`subtitle_font` 缺失时字幕降级跳过 |
 | 触摸 `cira_touch.py` | ✅ 真机验证通过 | CST816T I2C(0) 0x15, chip_id=0xB5, INT GPIO4, RST=GPIO1; **关键坑: 总线易锁死(SDA 被拉低)→ `cira_i2c.recover()` 补 9 个 SCL 脉冲自愈 + TCA9554 全部 EXIO 拉高释放复位** |
 | TCA9554 扩展 `cira_expander.py` | ✅ 真机验证通过 | 0x20, 释放 CST816 RST(EXIO1)/LCD RST(EXIO2); 上电默认全输入(等效复位态), 必须开机 `init(0xFF)` |
 | 音频 `cira_audio.py` | ✅ 真机验证通过 | ES8311 I2S1(TX) + PA GPIO15 + MCLK PWM GPIO2(4.096MHz); 16k 16bit 单声道 WAV 直喂 I2S; 防音爆铁律: 功放 warmup 只开一次常开, 出声靠 DAC 静音位切换 |
@@ -118,3 +120,33 @@ WiFi OK: 192.168.31.170
 → **CIRA 首次真机跑通"硬件本地唤醒音频 + 模型应答音频"全链路**（ES8311 出声, CST816 触摸可唤醒）。
 
 **下一步**：屏驱 ST77916 QSPI（唯一待补设备能力；显示/星云 UI 待移植 `ref_*`）。
+
+## 8. 真机验证记录（2026-08-09 晚 · v0.8.3 显示里程碑）
+
+**核心发现**：板子固件自带 **frozen `st77916` 模块**（硬件 QSPI + `_blit_kernel`/`_solid_kernel` C 加速），
+**不是**位模拟驱动。直接 `import st77916; st77916.ST77916(W,H,cs=,pclk=,d0..d3=,rst=,bl=,madctl=,invert=)`
+即可点亮 360×360 圆屏。省去了 v0.8.2 时最大的未知（自写 QSPI 位模拟）。
+⚠️ **LCD 硬复位走 TCA9554 EXIO2**（非 GPIO3 占位脚）：必须在构造前 `cira_expander.init()` 把全部 EXIO 设输出高，
+否则面板被压在复位态、初始化失败。
+
+**新增文件**：`cira_display.py`(frozen ST77916 封装) / `cira_emotions.py`(暖调色板) /
+`cira_face.py`(画布+draw_emotion) / `cira_lifeform.py`(星云渲染器) / `verify_display.py`(显示验证) /
+`cira_pins.py` 补 LCD 引脚。
+
+**结果**（verify_display.py 实测，34 帧无异常）：
+```
+=== verify_display v0.8.3 ===
+[DISP] canvas 360x360 particles=252
+[LF] frame 1 state=idle emotion=calm
+[LF] frame 21 state=think emotion=thinking
+[DEMO] wake / listen / think / speak(happy) / speak(comfort) / idle / sleep / wake
+=== verify_display OK frames=34 err=None ===
+```
+→ **CIRA 首次真机点亮 ST77916 + 渲染光生命体星云**，全态切换、熄屏/亮屏正常。
+`cira_main.py` 已整合：开机亮 idle 光生命体、状态机→光生命体态映射、睡眠熄屏、动画后台线程。
+（本验证在 Xiaozhi 背景固件同时运行下测得 ~1.3fps；干净 CIRA boot 单渲染会更快。）
+
+**可选收尾**：把 `cira_main.py` 设为板子 `main.py`（先 `fs mv main.py main_xiaozhi.py` 备份原固件）
+即成设备主固件，通电即 CIRA。回退：`fs mv main_xiaozhi.py main.py`。
+**待补**：中文全字库字幕字体（`subtitle_font`），当前中文字幕降级跳过。
+
