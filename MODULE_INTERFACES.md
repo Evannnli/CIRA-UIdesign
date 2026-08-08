@@ -191,7 +191,7 @@ const CIRA_INTEGRATION = {
 
 ## 9. 设备接口映射（模块协议 → 硬件落点）
 
-> 模块接口（§1–§3）如何落到 ESP32-S3-Touch-LCD-1.85C-BOX 真实硬件。硬件引脚/驱动以 `HARDWARE.md` 为准（V2 假设）。
+> 模块接口（§1–§3）如何落到 ESP32-S3-Touch-LCD-1.85C-BOX 真实硬件。硬件引脚/驱动以 `HARDWARE.md` 为准（**V2 已确认**）。
 
 | Device Runtime 输入/契约 | 硬件落点（V2） | 说明 |
 |--------------------------|----------------|------|
@@ -206,4 +206,38 @@ const CIRA_INTEGRATION = {
 - 渲染后端：浏览器 Canvas 2D → ESP32 帧缓冲（LVGL `lv_canvas` 或直接写 ST77916 framebuffer）。
 - 音频后端：Web Speech TTS（占位桩）→ ES8311 I2S 真实播放（模块2 输出 PCM）。
 - 状态机/触摸/唤醒逻辑（`app.js`/`lifeform.js` 抽象）**可复用**，仅 I/O 适配层替换。
-- ⚠️ 详见 `HARDWARE.md §11`：若你的板是 **HW V1**，音频栈（PCM5101A / 无 ES7210 / 不同 I2S 引脚）需整体替换。
+- ⚠️ 详见 `HARDWARE.md`：实体板**已确认 V2**，音频栈按 ES8311+ES7210 锁定；V1 差异仅作历史参考，换 V1 板时再整体切换。
+
+---
+
+## 10. 双契约对齐与桥接层（与模型侧 CIRA_INTERFACES.md 的差异处理）
+
+> 背景（2026-08-08 模型侧反馈）：模块 1/2 的冻结契约在 `engine/cira.py` / `engine/language_system.py` / `CIRA_INTERFACES.md`（由模型团队维护，**非本仓库**），与本文档 §1–§3 的冻结契约**不是同一套文本**，存在真实字段/枚举差异。**这不是理解偏差，无需推翻任一方冻结**——靠新增「适配桥接层」兜住即可。
+
+### 10.1 差异矩阵（已对齐，仅 5 处）
+除以下 5 处外，其余字段（`packageId` / `text` 等）两契约一致，无需桥接处理。
+
+| 字段 | 模型侧（CIRA_INTERFACES） | 本仓库（§1.3 / §2.2） | 桥接处理 |
+|------|--------------------------|----------------------|----------|
+| `emotion` | **9 值**枚举 | **5 值**：`calm`/`curious`/`thinking`/`happy`/`worried` | 桥接映射 **9→5**（就近折叠）；Device Runtime 仅识别 5 态 |
+| `priority` | 见 CIRA_INTERFACES（粒度可能更细） | `normal`/`interrupt` | 唤醒打断语义由 Device Runtime **本地硬编码「唤醒优先级最高」**（Evan 明确），桥接可忽略模型侧 priority 或默认 wake 始终胜出 |
+| `ttsHints` | 结构见 CIRA_INTERFACES | `{rate,pitch,voice,style}` | 桥接 marshal 为本仓库 shape；v0.8.0 Device Runtime **暂不消费**，作扩展字段透传 |
+| `presentationHints` | 结构见 CIRA_INTERFACES | `{pulse:bool}` 等 | 同上，透传 + 忽略未知 |
+| `endOfTurn` | bool | bool? | 桥接透传；v0.8.0 默认 `true`（单轮），后续可在不破冻结前提下消费 |
+
+### 10.2 Device Runtime 对桥接层的两项决定（驱动桥接层实现）
+**A. 传输方式：推荐 WebSocket 网关**
+- Device Runtime 只依赖本文档冻结的异步接口 `CIRA.Core.respond` / `CIRA.Language.synthesize`；**传输是桥接层内部事务**，`app.js` 不感知。
+- 推荐 WS 理由：对话设备需**流式音频（边合成边播）**以降低儿童陪伴场景的感知延迟；WS 长连接便于中断在播音频、以及未来 Core 主动推送。ESP32 `esp_websocket_client` 原生支持。
+- 退路：若模型侧基础设施仅 HTTP，HTTP(+chunked/streaming) 亦可——桥接层对外仍暴露同一冻结接口即可。**Device Runtime 代码不变**。
+
+**B. B 类字段（priority/ttsHints/presentationHints/endOfTurn + emotion 5vs9）：v0.8.0 走适配兜底，不升版本**
+- 依据：「**以还原交互体验为准**」。v0.8.0 目标是复刻当前原型体验（5 情绪 + 无 hints 消费），无需原生无损。
+- 兜底策略：桥接层把模型侧契约 **marshal 为本仓库 §1.3/§2.2 形状**（emotion 9→5 折叠；其余字段透传为扩展字段，Device Runtime 忽略未知）。
+- 冻结不动：模块 1/2 的 `engine/cira.py` / `engine/language_system.py` / `CIRA_INTERFACES.md` **一字不改**。
+- 升级触发条件（后续，非 v0.8.0）：当我们要在仿真器/固件里**真正消费 9 情绪或 hints 驱动呈现**时，再迭代 Core V2.02 / LS V1.01→V1.02 / `response-package@2`，并同步扩展 §1.3。届时属**新增字段（向后兼容）**，不破坏现有冻结。
+
+### 10.3 桥接层职责边界
+- **输入** = 模型侧 CIRA_INTERFACES 契约；**输出** = 本仓库 §1.3/§2.2 契约。
+- 仅做协议 marshal + 枚举映射 + 传输封装，**不含任何业务逻辑**（对话/发声/渲染分别在模块 1/2/3）。
+- Device Runtime 经 `modules.js` 的 `CIRA.Core` / `CIRA.Language` 调用桥接层暴露的**同一接口**，不感知桥接存在。
