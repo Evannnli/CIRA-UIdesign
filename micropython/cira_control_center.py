@@ -155,6 +155,27 @@ def _bar(disp, x, y, w, h, frac):
     _disc(disp, x + fw, y + h // 2, h // 2 + 1, C_TITLE)
 
 
+def _clear_rect(disp, x, y, w, h):
+    """用底色覆盖一块矩形（局部擦除，避免整屏 fill）。"""
+    disp.fill_rect(x, y, w, h, C_BG)
+
+
+def _redraw_sub_dynamic(disp, view):
+    """子视图拖动时只刷新动态部分（大数值 + 滑块），避免整屏重绘卡顿。
+
+    路线 B v0.8.8：原来每次调节都整屏 `_redraw`（先 fill 全屏 + 重画所有文字），
+    拖动时整屏闪。现只擦除并重画「大数值区」与「滑块区」——标题(‹ 返回+子标题)
+    与底部提示都在擦除区域之外，得以保留，拖动从「整屏闪」变成「局部刷」。
+    """
+    # 大数值区（覆盖最宽 4 字 ×2 倍 ≈ 96px，留余量到 220 宽）
+    _clear_rect(disp, CX - 110, 128, 220, 64)
+    _draw_text2x_c(disp, 150, _sub_big(view), C_TITLE)
+    # 滑块区（含拇指圆余量；非滑块子视图此块本就是底色，清了也无残留）
+    _clear_rect(disp, 48, 202, 268, 28)
+    if view in ("vol", "bri", "mode"):
+        _bar(disp, 50, 210, 260, 10, _frac(view))
+
+
 # ── 数值 / 调节 ────────────────────────────────────────────
 def _frac(sub):
     if sub == "vol":
@@ -330,10 +351,10 @@ def run(canvas, touch, disp):
         else:
             if x < 120:
                 _adjust(view, -1)
-                _redraw(disp, view, sel)
+                _redraw_sub_dynamic(disp, view)
             elif x > 240:
                 _adjust(view, +1)
-                _redraw(disp, view, sel)
+                _redraw_sub_dynamic(disp, view)
             else:
                 view = "home"
                 _redraw(disp, view, sel)

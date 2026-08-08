@@ -131,7 +131,11 @@ class Lifeform:
         self._pf = dict(STATE_PROFILE["idle"])
         self._t0 = time.ticks_ms()
         self._last_blit = 0
-        self._interval = 220
+        # 帧率闸门（路线 B v0.8.8）：0 = 取消限帧，每帧都渲染，星云连续不跳变。
+        # 之前 220ms(~4.5fps) 是「雷达图光点闪烁」的根因——位置每 220ms 才跳一次。
+        # 现改 0，实际帧率由每帧渲染耗时决定（后台线程 sleep 同步降到 16ms，见 cira_main）。
+        # 若真机太卡/太耗电，可回调 33(≈30fps) 或 40(≈25fps)。
+        self._interval = 0
         self._dirty = True
         self._tint = [C_CORE_WARM, C_WARM, C_PINK]   # 当前三色（随状态色更新）
         self._tint_n = [[1, 1, 1], [1, 1, 1], [1, 1, 1]]
