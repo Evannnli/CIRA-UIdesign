@@ -1,5 +1,5 @@
 /**
- * CIRA Web 交互原型 — 主控制器  (v0.6.1)
+ * CIRA Web 交互原型 — 主控制器 / Device Runtime (模块3)  (v0.7)
  *
  * 职责:
  *   - 状态机 (Idle / Listening / Thinking / Speaking / Settings / Offline / Sleep)
@@ -14,7 +14,7 @@
  *   - Wi-Fi 完整链路: 开关 / 自动搜索 + 重新搜索 / 点击连接 / 屏内键盘输入密码 / 忘掉此网络
  *   - 蓝牙完整链路: 开关 / 扫描 / 配对连接 / 已配对设备 / 忽略此设备
  *   - 音量滑杆 (0–100) / 屏幕亮度滑杆 (1–400 nit, 实时遮罩)
- *   - 模拟对话脚本 (Listening 接收字幕 → Thinking → Speaking 输出字幕 → 回 Idle)
+ *   - 通过冻结接口编排模块1/2 (Listening → 模块1 respond → 模块2 synthesize → 回 Idle)
  *   - 控制面板: 状态切换 / 情绪切换 / 输入字幕 / 模拟异常 / 视觉调参
  */
 
@@ -640,6 +640,7 @@
   // ============================================================
   function stopAllOutput() {
     try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch (_) {}
+    if (currentAudioHandle) { try { currentAudioHandle.stop(); } catch (_) {} currentAudioHandle = null; }
     if (conversationTimer) { clearTimeout(conversationTimer); conversationTimer = null; }
     if (audioLevelAnim) { cancelAnimationFrame(audioLevelAnim); audioLevelAnim = null; }
     lf.setAudioLevel(0);
@@ -691,12 +692,16 @@
   }
 
   // ============================================================
-  //  模拟对话流  (Listening → Thinking → Speaking → Idle)
-  //  - 原型用脚本模拟 "用户语音 → 云端模型 → TTS 播报"; 生产环境把 beginListen 的
-  //    ASR 文本 / 音频 发往云端模型, 把返回文本做 TTS, 行为完全一致
+  //  对话流编排 (模块3 = Device Runtime 编排 模块1 → 模块2 → 自身表现)
+  //  - 模块1 CIRA Core:      respond(transcript)   → ResponsePackage   ("说什么")
+  //  - 模块2 Language System: synthesize(pkg)        → AudioHandle      ("怎么说")
+  //  - 模块3 自身: 状态机 + 星云渲染 + 音频电平动画 + 唤醒打断
+  //  依赖方式: 仅经 modules.js 暴露的 CIRA.Core / CIRA.Language 接口,
+  //            绝不依赖模块1/2 内部实现 (满足冻结标准)
   // ============================================================
   let conversationTimer = null;
   let audioLevelAnim = null;
+  let currentAudioHandle = null;   // 模块2 返回的 AudioHandle, 供唤醒打断时 stop()
 
   const LISTEN_PHRASES = [
     '妈妈，我们来玩游戏好不好',
@@ -711,8 +716,8 @@
     if (conversationTimer) clearTimeout(conversationTimer);
     transition(STATES.LISTENING);
 
-    // 接收语音: 逐字 "识别" 出现 (listening 字幕)
-    const heard = LISTEN_PHRASES[Math.floor(Math.random() * LISTEN_PHRASES.length)];
+    // 接收语音 (原型用脚本模拟 ASR; 真机由设备端 ASR 产出 transcript 后调 onAsrDone)
+    const heard = customText || LISTEN_PHRASES[Math.floor(Math.random() * LISTEN_PHRASES.length)];
     subtitle.classList.add('listening', 'show');
     subtitle.textContent = '';
 
@@ -721,7 +726,7 @@
     if (audioLevelAnim) cancelAnimationFrame(audioLevelAnim);
     const tick = () => {
       const dt = (performance.now() - start) / recordMs;
-      if (dt > 1) { subtitle.textContent = heard; onAsrDone(customText); return; }
+      if (dt > 1) { subtitle.textContent = heard; onAsrDone(heard); return; }
       const shown = Math.floor(heard.length * Math.min(1, dt * 1.15));
       subtitle.textContent = heard.slice(0, shown);
       const t = performance.now() / 200;
@@ -733,47 +738,70 @@
   }
 
   function onAsrDone(text) {
+    // ① 进入思考态, 调用冻结接口 CIRA.Core.respond()
     transition(STATES.THINKING, { emotion: 'thinking' });
-    conversationTimer = setTimeout(() => {
-      speakScript(text || pickRandomScript());
+    conversationTimer = setTimeout(async () => {
+      let pkg;
+      try {
+        pkg = await CIRA.Core.respond({ transcript: text || '', sessionId: 'local', locale: 'zh-CN' });
+      } catch (err) {
+        console.warn('[DeviceRuntime] 模块1 CIRA Core 调用失败:', err);
+        transition(STATES.OFFLINE, { emotion: 'worried' });
+        return;
+      }
+      await playResponsePackage(pkg);
     }, 1200);
   }
 
-  function speakScript(text) {
-    transition(STATES.SPEAKING, { emotion: 'happy' });
+  async function playResponsePackage(pkg) {
+    if (!pkg) return;
+    const emotion = pkg.emotion || 'calm';
+    lf.setEmotion(emotion);
+    transition(STATES.SPEAKING, { emotion });
+
     subtitle.classList.remove('listening');
-    subtitle.textContent = text;
+    subtitle.textContent = pkg.text || '';
     subtitle.classList.add('show');
 
-    const speakMs = Math.max(1400, text.length * 180);
+    // ② 调用冻结接口 CIRA.Language.synthesize() → AudioHandle
+    let handle;
+    try {
+      handle = await CIRA.Language.synthesize(pkg);
+    } catch (err) {
+      console.warn('[DeviceRuntime] 模块2 Language System 调用失败:', err);
+      scheduleReturnToIdle(1500);
+      return;
+    }
+    currentAudioHandle = handle;
+
+    // 音频电平动画: 真机由模块2音频流驱动; 原型用 durationMs 估算
+    const dur = (handle && handle.durationMs) || Math.max(1400, (pkg.text || '').length * 180);
     const startSpeak = performance.now();
+    let finished = false;
+    const finishSpeak = () => {
+      if (finished) return; finished = true;
+      if (audioLevelAnim) cancelAnimationFrame(audioLevelAnim);
+      lf.setAudioLevel(0);
+      lf.setTtsProgress(0.5);
+      currentAudioHandle = null;
+      scheduleReturnToIdle(1500);
+    };
     const tickSpeak = () => {
-      const dt = (performance.now() - startSpeak) / speakMs;
-      if (dt > 1) {
-        cancelAnimationFrame(audioLevelAnim);
-        lf.setAudioLevel(0);
-        lf.setTtsProgress(0.5);
-        conversationTimer = setTimeout(() => transition(STATES.IDLE), 1500);
-        return;
-      }
+      const dt = (performance.now() - startSpeak) / dur;
+      if (dt > 1) { finishSpeak(); return; }
       lf.setTtsProgress(dt);
       lf.setAudioLevel(0.3 + 0.25 * Math.sin(performance.now() / 100));
       audioLevelAnim = requestAnimationFrame(tickSpeak);
     };
     audioLevelAnim = requestAnimationFrame(tickSpeak);
+
+    if (handle && handle.onEnd) handle.onEnd(finishSpeak);
+    if (handle && handle.play) handle.play();
   }
 
-  function pickRandomScript() {
-    const scripts = [
-      '蝴蝶花真的很漂亮呢',
-      '今天有什么想跟我聊聊的吗?',
-      '我在听你说, 慢慢来.',
-      '嗯嗯, 你是这样想的呀.',
-      '我想了一下, 你说得有道理.',
-      '要不要一起画一只小兔子?',
-      '别担心, 我一直都在.',
-    ];
-    return scripts[Math.floor(Math.random() * scripts.length)];
+  function scheduleReturnToIdle(ms) {
+    if (conversationTimer) clearTimeout(conversationTimer);
+    conversationTimer = setTimeout(() => transition(STATES.IDLE), ms);
   }
 
   // ============================================================
