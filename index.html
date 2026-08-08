@@ -3,15 +3,15 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>CIRA · 设备端交互原型 v0.6.1</title>
-  <link rel="stylesheet" href="styles.css?v=0.6.1">
+  <title>CIRA · 设备端交互原型 v0.7</title>
+  <link rel="stylesheet" href="styles.css?v=0.7">
 </head>
 <body>
 
 <header>
   <div class="title">
     <h1>CIRA</h1>
-    <span class="ver">设备端交互原型 · v0.6</span>
+    <span class="ver">设备端交互原型 · v0.7</span>
   </div>
   <div class="meta">360×360 圆屏 · 光生命体 · Web 模拟</div>
 </header>
@@ -332,7 +332,11 @@
   配套文档: 《CIRA UX 设计规范 v0.1》·《交互需求文档》· 设备端代码: face.py / emotions.py / settings.py / main.py
 </footer>
 
-<script src="lifeform.js?v=0.6.1"></script>
-<script src="app.js?v=0.6.1"></script>
+<script src="lifeform.js?v=0.7"></script>
+<!-- 模块1/2 本地占位桩 (真实模块接入后可删); modules.js 是 Device Runtime 的唯一集成接缝 -->
+<script src="core.js?v=0.7"></script>
+<script src="language.js?v=0.7"></script>
+<script src="modules.js?v=0.7"></script>
+<script src="app.js?v=0.7"></script>
 </body>
 </html>
