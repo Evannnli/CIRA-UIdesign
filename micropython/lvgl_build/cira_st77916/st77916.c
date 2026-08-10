@@ -16,10 +16,12 @@
  * ⚠ 本文件在沙盒无法编译（需 ESP-IDF 工具链 + 硬件）。若编译/运行报错，把报错
  *   贴回给 AI，据此修正后重编。常见坑：颜色字节序（RGB565 高低字节）、max_transfer_sz
  *   超限（已做分带）、MP_DEFINE_CONST_OBJ_TYPE 宏名（旧版为 MP_DEFINE_CONST_TYPE）。
+ *   ⚠ micropython 1.24 起已删除 STATIC 宏，必须用小写 static（本文件已改）。
  */
 
 #include "py/runtime.h"
 #include "py/obj.h"
+#include "py/mperrno.h"   // MP_ENOMEM 等 errno 常量
 #include "stdint.h"
 #include "string.h"
 
@@ -38,6 +40,7 @@ static esp_lcd_panel_io_handle_t g_io = NULL;
 static bool g_bl_inited = false;
 static int  g_bl_pin = -1;
 static int  g_max_sz = 0;          // 单次 SPI 传输上限（字节），blit 分带用
+static bool g_blit_logged = false; // 首次 blit 只打印一次，便于 spike 诊断
 
 /* ---- 对象 ---- */
 typedef struct _st77916_obj_t {
@@ -45,6 +48,13 @@ typedef struct _st77916_obj_t {
     int width;
     int height;
 } st77916_obj_t;
+
+/* ---- 辅助：init 命令软检查（首次 bring-up 不让单条失败直接 hard-abort 重启）---- */
+static void init_check(esp_err_t e, uint8_t cmd) {
+    if (e != ESP_OK) {
+        printf("[st77916] init cmd 0x%02X 返回 0x%04X（继续，不中止）\n", cmd, (unsigned)e);
+    }
+}
 
 /* ---- 辅助：设置绘制窗口 (x,y)..(x+w-1,y+h-1) ---- */
 static void send_window(int x, int y, int w, int h) {
@@ -61,7 +71,7 @@ static void send_window(int x, int y, int w, int h) {
 }
 
 /* ---- 构造 ---- */
-STATIC mp_obj_t st77916_make_new(const mp_obj_type_t *type, size_t n_args, size_t n_kw,
+static mp_obj_t st77916_make_new(const mp_obj_type_t *type, size_t n_args, size_t n_kw,
                                  const mp_obj_t *args) {
     enum { ARG_w, ARG_h, ARG_cs, ARG_pclk, ARG_d0, ARG_d1, ARG_d2, ARG_d3,
            ARG_rst, ARG_bl, ARG_madctl, ARG_invert };
@@ -74,6 +84,9 @@ STATIC mp_obj_t st77916_make_new(const mp_obj_type_t *type, size_t n_args, size_
         { MP_QSTR_d1,     MP_ARG_REQUIRED | MP_ARG_INT, {.u_int = 45} },
         { MP_QSTR_d2,     MP_ARG_REQUIRED | MP_ARG_INT, {.u_int = 42} },
         { MP_QSTR_d3,     MP_ARG_REQUIRED | MP_ARG_INT, {.u_int = 41} },
+        /* rst：保留参数，当前**故意不使用**。本板 LCD 复位线接在 TCA9554 的
+           EXIO2 上（不是 SoC GPIO），所以复位由 Python 侧 cira_expander.init()
+           负责。传任何值都不会碰 GPIO，cira_pins.LCD_RST=3 只是占位。 */
         { MP_QSTR_rst,    MP_ARG_INT,                   {.u_int = -1} },
         { MP_QSTR_bl,     MP_ARG_INT,                   {.u_int = 5} },
         { MP_QSTR_madctl, MP_ARG_INT,                   {.u_int = 0} },
@@ -115,14 +128,14 @@ STATIC mp_obj_t st77916_make_new(const mp_obj_type_t *type, size_t n_args, size_
             .trans_queue_depth = 10,
             .on_color_trans_done = NULL,
             .user_ctx = NULL,
-            .lcd_cmd_bits = 32,
+            .lcd_cmd_bits = 8,    // ST77916 QSPI 命令为 1 字节（曾误写 32 → 每条命令都错）
             .lcd_param_bits = 8,
             .flags = { .quad_mode = true },
         };
         ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)SPI2_HOST,
                                                   &io_config, &g_io));
 
-        /* 发送初始化序列 */
+        /* 发送初始化序列（软检查：单条失败仅打印，不 hard-abort） */
         for (int i = 0; i < ST77916_INIT_N; i++) {
             const uint8_t *row = st77916_init_tbl[i];
             uint8_t cmd   = row[0];
@@ -130,19 +143,22 @@ STATIC mp_obj_t st77916_make_new(const mp_obj_type_t *type, size_t n_args, size_
             uint8_t delay = row[2];
             const uint8_t *data = &row[3];
             if (len > 0) {
-                ESP_ERROR_CHECK(esp_lcd_panel_io_tx_param(g_io, cmd, data, len));
+                init_check(esp_lcd_panel_io_tx_param(g_io, cmd, data, len), cmd);
             } else {
-                ESP_ERROR_CHECK(esp_lcd_panel_io_tx_param(g_io, cmd, NULL, 0));
+                init_check(esp_lcd_panel_io_tx_param(g_io, cmd, NULL, 0), cmd);
             }
             if (delay > 0) {
                 vTaskDelay(delay / portTICK_PERIOD_MS);
             }
         }
+        /* DISPON 后留一点稳定时间（部分面板需要） */
+        vTaskDelay(50 / portTICK_PERIOD_MS);
 
         /* 方向 (MADCTL) + 反色 (INVON/INVOFF) */
         uint8_t mc[1] = { (uint8_t)madctl };
-        ESP_ERROR_CHECK(esp_lcd_panel_io_tx_param(g_io, 0x36, mc, 1));
-        ESP_ERROR_CHECK(esp_lcd_panel_io_tx_param(g_io, invert ? 0x21 : 0x20, NULL, 0));
+        init_check(esp_lcd_panel_io_tx_param(g_io, 0x36, mc, 1), 0x36);
+        init_check(esp_lcd_panel_io_tx_param(g_io, invert ? 0x21 : 0x20, NULL, 0),
+                   invert ? 0x21 : 0x20);
 
         /* 背光 LEDC */
         g_bl_pin = bl;
@@ -164,6 +180,8 @@ STATIC mp_obj_t st77916_make_new(const mp_obj_type_t *type, size_t n_args, size_
         };
         ESP_ERROR_CHECK(ledc_channel_config(&ledc_ch));
         g_bl_inited = true;
+        printf("[st77916] init 完成 w=%d h=%d cs=%d pclk=%d d0..3=%d/%d/%d/%d bl=%d\n",
+               w, h, cs, pclk, d0, d1, d2, d3, bl);
     }
 
     st77916_obj_t *self = m_new_obj(st77916_obj_t);
@@ -174,8 +192,8 @@ STATIC mp_obj_t st77916_make_new(const mp_obj_type_t *type, size_t n_args, size_
 }
 
 /* ---- blit(buf, x, y, w, h)：把 RGB565 缓冲画到屏上指定矩形 ---- */
-STATIC mp_obj_t st77916_blit(size_t n_args, const mp_obj_t *args) {
-    st77916_obj_t *self = MP_OBJ_TO_PTR(args[0]);
+static mp_obj_t st77916_blit(size_t n_args, const mp_obj_t *args) {
+    (void)n_args;
     mp_obj_t buf_in = args[1];
     int x = mp_obj_get_int(args[2]);
     int y = mp_obj_get_int(args[3]);
@@ -186,6 +204,11 @@ STATIC mp_obj_t st77916_blit(size_t n_args, const mp_obj_t *args) {
     }
     mp_buffer_info_t bufinfo;
     mp_get_buffer_raise(buf_in, &bufinfo, MP_BUFFER_READ);
+
+    if (!g_blit_logged) {
+        printf("[st77916] blit 首次调用 x=%d y=%d w=%d h=%d buf=%p\n", x, y, w, h, bufinfo.buf);
+        g_blit_logged = true;
+    }
 
     if ((size_t)(w * h * 2) <= (size_t)g_max_sz) {
         send_window(x, y, w, h);
@@ -203,10 +226,10 @@ STATIC mp_obj_t st77916_blit(size_t n_args, const mp_obj_t *args) {
     }
     return mp_const_none;
 }
-STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(st77916_blit_obj, 6, 6, st77916_blit);
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(st77916_blit_obj, 6, 6, st77916_blit);
 
 /* ---- fill(color)：整屏填充单色（color 为 RGB565 uint16） ---- */
-STATIC mp_obj_t st77916_fill(size_t n_args, const mp_obj_t *args) {
+static mp_obj_t st77916_fill(size_t n_args, const mp_obj_t *args) {
     st77916_obj_t *self = MP_OBJ_TO_PTR(args[0]);
     int color = mp_obj_get_int(args[1]) & 0xFFFF;
     if (g_io == NULL) {
@@ -228,10 +251,10 @@ STATIC mp_obj_t st77916_fill(size_t n_args, const mp_obj_t *args) {
     free(line);
     return mp_const_none;
 }
-STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(st77916_fill_obj, 2, 2, st77916_fill);
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(st77916_fill_obj, 2, 2, st77916_fill);
 
 /* ---- on() / off()：显示开关 + 背光 ---- */
-STATIC mp_obj_t st77916_on(mp_obj_t self_in) {
+static mp_obj_t st77916_on(mp_obj_t self_in) {
     if (g_io) ESP_ERROR_CHECK(esp_lcd_panel_io_tx_param(g_io, 0x29, NULL, 0));  // DISPON
     if (g_bl_inited) {
         ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 200);
@@ -239,9 +262,9 @@ STATIC mp_obj_t st77916_on(mp_obj_t self_in) {
     }
     return mp_const_none;
 }
-STATIC MP_DEFINE_CONST_FUN_OBJ_1(st77916_on_obj, st77916_on);
+static MP_DEFINE_CONST_FUN_OBJ_1(st77916_on_obj, st77916_on);
 
-STATIC mp_obj_t st77916_off(mp_obj_t self_in) {
+static mp_obj_t st77916_off(mp_obj_t self_in) {
     if (g_io) ESP_ERROR_CHECK(esp_lcd_panel_io_tx_param(g_io, 0x28, NULL, 0));  // DISPOFF
     if (g_bl_inited) {
         ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
@@ -249,10 +272,10 @@ STATIC mp_obj_t st77916_off(mp_obj_t self_in) {
     }
     return mp_const_none;
 }
-STATIC MP_DEFINE_CONST_FUN_OBJ_1(st77916_off_obj, st77916_off);
+static MP_DEFINE_CONST_FUN_OBJ_1(st77916_off_obj, st77916_off);
 
 /* ---- set_nit(nit)：背光亮度（0..~400 → duty 0..255） ---- */
-STATIC mp_obj_t st77916_set_nit(mp_obj_t self_in, mp_obj_t nit_in) {
+static mp_obj_t st77916_set_nit(mp_obj_t self_in, mp_obj_t nit_in) {
     int nit = mp_obj_get_int(nit_in);
     if (!g_bl_inited) return mp_const_none;
     int duty = (nit * 255) / 400;
@@ -262,17 +285,17 @@ STATIC mp_obj_t st77916_set_nit(mp_obj_t self_in, mp_obj_t nit_in) {
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
     return mp_const_none;
 }
-STATIC MP_DEFINE_CONST_FUN_OBJ_2(st77916_set_nit_obj, st77916_set_nit);
+static MP_DEFINE_CONST_FUN_OBJ_2(st77916_set_nit_obj, st77916_set_nit);
 
 /* ---- locals / type / module ---- */
-STATIC const mp_rom_map_elem_t st77916_locals_dict_table[] = {
+static const mp_rom_map_elem_t st77916_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_blit),    MP_ROM_PTR(&st77916_blit_obj) },
     { MP_ROM_QSTR(MP_QSTR_fill),    MP_ROM_PTR(&st77916_fill_obj) },
     { MP_ROM_QSTR(MP_QSTR_on),      MP_ROM_PTR(&st77916_on_obj) },
     { MP_ROM_QSTR(MP_QSTR_off),     MP_ROM_PTR(&st77916_off_obj) },
     { MP_ROM_QSTR(MP_QSTR_set_nit), MP_ROM_PTR(&st77916_set_nit_obj) },
 };
-STATIC MP_DEFINE_CONST_DICT(st77916_locals_dict, st77916_locals_dict_table);
+static MP_DEFINE_CONST_DICT(st77916_locals_dict, st77916_locals_dict_table);
 
 MP_DEFINE_CONST_OBJ_TYPE(
     st77916_type,
@@ -282,11 +305,11 @@ MP_DEFINE_CONST_OBJ_TYPE(
     locals_dict, &st77916_locals_dict
 );
 
-STATIC const mp_rom_map_elem_t st77916_module_globals_table[] = {
+static const mp_rom_map_elem_t st77916_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_st77916) },
     { MP_ROM_QSTR(MP_QSTR_ST77916),  MP_ROM_PTR(&st77916_type) },
 };
-STATIC MP_DEFINE_CONST_DICT(st77916_module_globals, st77916_module_globals_table);
+static MP_DEFINE_CONST_DICT(st77916_module_globals, st77916_module_globals_table);
 
 const mp_obj_module_t st77916_module = {
     .base = { &mp_type_module },

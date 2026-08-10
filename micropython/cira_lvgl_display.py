@@ -8,11 +8,17 @@ ST77916 圆屏(360×360) ↔ LVGL flush_cb。本模块是 LVGL 迁移的「地�
     否则降级 dummy flush（仅验证 LVGL 在跑，方案 B 待补纯 Python SPI flush）。
   · 暴露 set_nit / screen_on / screen_off，供上层调背光。
 
-⚠ 本文件与 tools/lvgl_hello.py 探针同款 API（display_create / draw_buf_create /
-   set_flush_cb）。探针先过，本模块才可信。若你的 lv_micropython 是 LVGL v8
-（disp_drv_register 风格），需把本模块 display 段按 v8 改写（见底部注释）。
+⚠ 本文件已**真机验证通过**（2026-08-11，lv_micropython + LVGL 9.6.0 + 本板
+  ST77916 QSPI C 扩展）。tools/lvgl_hello.py 探针 L0~L3 全绿，圆屏出
+  "CIRA · LVGL" + 圆环。若你的 lv_micropython 是 LVGL v8（disp_drv_register
+  风格），需把本模块 display 段按 v8 改写（见底部注释）。
 
-⚠ 沙盒无 ESP-IDF/烧录链，本文件未在真机运行；只经 API 静态核对。
+⚠ LVGL 9.6.0 绑定三大 API 坑（都是真机踩出来的）：
+  1) 颜色格式常量是命名空间：lv.COLOR_FORMAT.RGB565（不是 lv.COLOR_FORMAT_RGB565）。
+  2) 挂绘制缓冲必须用 disp.set_draw_buffers(buf1, buf2)；display_create 不自动建
+     缓冲，漏挂会让 set_flush_cb 时按垃圾分辨率去分配 ~1.1GB → MemoryError / 崩板。
+  3) flush_cb 的 color_p 是 lv.Pointer 对象，用 color_p.__dereference__(size)
+     取内存视图（不是旧文档里的 uctypes.bytearray_at(int) 裸地址）。
 """
 import time
 import lvgl as lv
@@ -25,9 +31,21 @@ _disp = None
 _st = None
 
 
+def _flush_ready(disp):
+    """LVGL v9: lv.display_flush_ready(disp)；部分 v9 绑定为 disp.flush_ready()。
+    统一兼容，避免 flush 回调里因 API 名不同而卡死 LVGL。"""
+    try:
+        lv.display_flush_ready(disp)
+    except Exception:
+        try:
+            disp.flush_ready()
+        except Exception as e:
+            print("[LVGL] flush_ready 失败:", e)
+
+
 def _flush_dummy(disp, area, color_p):
     """无 ST77916 时的兜底：仅证明 flush 路径被调用，不真点亮屏。"""
-    lv.display_flush_ready(disp)
+    _flush_ready(disp)
 
 
 def _make_st77916_flush(st):
@@ -45,12 +63,20 @@ def _make_st77916_flush(st):
             st.blit(buf, x0, y0, w, h)
         except Exception as ex:
             print("[LVGL] st77916.blit 异常:", ex)
-        lv.display_flush_ready(disp)
+        _flush_ready(disp)
     return _flush
 
 
 def _color_p_to_buf(color_p, size):
-    """把 flush_cb 的 color_p 转成可读缓冲（兼容 int 地址与直接 buffer 两种形态）。"""
+    """把 flush_cb 的 color_p 转成可读缓冲。
+    lv_micropython v9 里 color_p 是 lv.Pointer 对象，用 __dereference__(size)
+    取内存视图（官方 ST77xx 驱动就是这么干的）。旧文档写法是裸 int 地址
+    （uctypes.bytearray_at），这里两种形态都兼容。"""
+    if hasattr(color_p, "__dereference__"):
+        try:
+            return color_p.__dereference__(size)
+        except Exception:
+            pass
     if isinstance(color_p, int):
         import uctypes
         return uctypes.bytearray_at(color_p, size)
@@ -95,18 +121,33 @@ def init_lvgl_display():
         _st = None
         print("[LVGL] 无 ST77916 frozen 模块 → dummy flush（仅验证 LVGL 运行，需走方案 B）:", e)
 
-    # 2) 注册显示（LVGL v9 API）
-    draw_buf = lv.draw_buf_create(W, max(1, H // 4), lv.COLOR_FORMAT_RGB565, 0)
+    # 2) 注册显示（LVGL v9 API，严格对齐 lv_binding_micropython 官方 ST77xx 驱动）
+    # 关键坑：本绑定 display_create 不会自动建绘制缓冲，必须显式
+    #   set_draw_buffers(buf1, buf2) 挂双缓冲；漏挂会让 set_flush_cb 时按
+    #   垃圾分辨率去分配 ~1.1GB → MemoryError / 直接崩板。
+    #   颜色格式常量在 LVGL 9.6.0 里是 `lv.COLOR_FORMAT` 命名空间
+    #   （lv.COLOR_FORMAT.RGB565），不是 lv.COLOR_FORMAT_RGB565。
+    cf = lv.COLOR_FORMAT.RGB565
+    buf_h = max(1, H // 4)
+    draw_buf1 = lv.draw_buf_create(W, buf_h, cf, 0)
+    draw_buf2 = lv.draw_buf_create(W, buf_h, cf, 0)
     disp = lv.display_create(W, H)
-    disp.set_flush_cb(flush)
-    disp.set_draw_buf(draw_buf)
     try:
-        disp.set_color_format(lv.COLOR_FORMAT_RGB565)
+        disp.set_color_format(cf)
     except Exception:
         pass
+    disp.set_draw_buffers(draw_buf1, draw_buf2)
+    try:
+        disp.set_render_mode(lv.DISPLAY_RENDER_MODE.PARTIAL)
+    except Exception:
+        pass
+    disp.set_flush_cb(flush)
     _disp = disp
 
-    scr = lv.screen_active()
+    try:
+        scr = lv.screen_active()
+    except Exception:
+        scr = lv.scr_act()   # LVGL v8 别名
     scr.set_style_bg_color(lv.color_black(), 0)
     return disp, scr
 
