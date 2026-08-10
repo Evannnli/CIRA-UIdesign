@@ -86,11 +86,13 @@ def main():
         time.sleep_ms(16)
 
 
-if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        import sys
-        # 只打印，不 machine.reset()，避免崩板时黑屏无限重启循环（保持 REPL 可连）
-        sys.print_exception(e)
-        raise
+# 开机自启：直接跑 main()，不要依赖 __name__ 判断。
+# 部分 MicroPython 构建在开机跑 main.py 时 __name__ 并非 "__main__"，
+# 会导致 splash 不启动、屏一直黑。这里无条件启动渲染循环。
+try:
+    main()
+except Exception as e:
+    import sys
+    # 只打印，不 machine.reset()：避免崩板时黑屏无限重启循环（保持 REPL 可连）
+    sys.print_exception(e)
+    raise

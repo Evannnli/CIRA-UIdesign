@@ -27,11 +27,14 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 
 #include "driver/spi_master.h"
 #include "driver/ledc.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
+#include "esp_heap_caps.h"
+#include "esp_cache.h"
 
 #include "st77916_init_data.h"
 
@@ -41,6 +44,7 @@ static bool g_bl_inited = false;
 static int  g_bl_pin = -1;
 static int  g_max_sz = 0;          // 单次 SPI 传输上限（字节），blit 分带用
 static bool g_blit_logged = false; // 首次 blit 只打印一次，便于 spike 诊断
+static SemaphoreHandle_t g_dma_sem = NULL; // 像素 DMA 完成信号量（ISR give / 任务 take）
 
 /* ---- 对象 ---- */
 typedef struct _st77916_obj_t {
@@ -56,6 +60,22 @@ static void init_check(esp_err_t e, uint8_t cmd) {
     }
 }
 
+/* 像素 DMA 完成后由 ESP-IDF SPI 的 post-trans 回调（ISR 上下文）触发，
+   给出"本次传输完成"的信号，供 blit/fill 在释放或覆盖源缓冲前同步等待。 */
+static void cira_dma_done_cb(esp_lcd_panel_io_handle_t io, void *edata, void *user_ctx) {
+    xSemaphoreGiveFromISR(g_dma_sem, NULL);
+}
+
+/* 等"当前这一笔"像素 DMA 真正完成再返回。
+   关键点：esp_lcd_panel_io_tx_color 是「入队即返回」的异步路径——上一笔若还在飞，
+   tx_color 开头会先 drain 等它完成（其回调已给过信号量），故返回时只有"当前这笔"还在飞。
+   先 take(0) 清掉残留（上一笔 / drain 期间给的），再 take 等当前这笔完成，
+   避免「释放/覆盖缓冲时 DMA 还在读」的竞态（这是之前屏刚亮就静默看门狗重启的根因）。 */
+static void wait_dma_done(void) {
+    xSemaphoreTake(g_dma_sem, 0);                   // 清残留信号（非阻塞）
+    xSemaphoreTake(g_dma_sem, pdMS_TO_TICKS(500));  // 等当前这笔完成
+}
+
 /* ---- 辅助：设置绘制窗口 (x,y)..(x+w-1,y+h-1) ---- */
 static void send_window(int x, int y, int w, int h) {
     uint8_t col[4] = {
@@ -68,6 +88,26 @@ static void send_window(int x, int y, int w, int h) {
     };
     esp_lcd_panel_io_tx_param(g_io, 0x2A, col, 4);   // CASET
     esp_lcd_panel_io_tx_param(g_io, 0x2B, row, 4);   // RASET
+}
+
+/* 把缓冲拷到 DMA 可达的内部 SRAM 再发 RAMWR，并等 DMA 真正完成才返回。
+   ① MicroPython 的 bytearray 默认在 Octal PSRAM，且可缓存；拷贝到内部 SRAM
+      并 msync 清 D$ 后再 DMA，避免「DMA 读 PSRAM 缓存未回写」导致的花屏/错位。
+   ② esp_lcd_panel_io_tx_color 是「入队即返回」的异步路径，必须等完成再释放/覆盖
+      源缓冲（wait_dma_done），否则 DMA 还在读缓冲就被回收 → 堆损坏 → 静默看门狗重启。 */
+static void blit_dma_safe(const uint8_t *src, size_t size) {
+    uint8_t *dma = heap_caps_malloc(size, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    if (dma == NULL) {
+        /* 极端内存不足：退回直发（仍走同步等待，避免释放/覆盖竞态） */
+        esp_lcd_panel_io_tx_color(g_io, 0x2C, src, size);
+        wait_dma_done();
+        return;
+    }
+    memcpy(dma, src, size);
+    esp_cache_msync(dma, size, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+    esp_lcd_panel_io_tx_color(g_io, 0x2C, dma, size);
+    wait_dma_done();
+    heap_caps_free(dma);
 }
 
 /* ---- 构造 ---- */
@@ -108,6 +148,10 @@ static mp_obj_t st77916_make_new(const mp_obj_type_t *type, size_t n_args, size_
     bool invert = vals[ARG_invert].u_bool;
 
     if (g_io == NULL) {
+        /* 像素 DMA 完成信号量（ISR give / 任务 take），保证释放/覆盖缓冲前 DMA 已结束 */
+        if (g_dma_sem == NULL) {
+            g_dma_sem = xSemaphoreCreateBinary();
+        }
         /* QSPI 总线（数据线 D0..D3 + 时钟） */
         spi_bus_config_t bus_config = {
             .data0_io_num = d0,
@@ -125,8 +169,8 @@ static mp_obj_t st77916_make_new(const mp_obj_type_t *type, size_t n_args, size_
             .dc_gpio_num = -1,
             .spi_mode = 0,
             .pclk_hz = 40 * 1000 * 1000,
-            .trans_queue_depth = 10,
-            .on_color_trans_done = NULL,
+            .trans_queue_depth = 1,  /* 串行、同步完成，避免 360 次快速 blit 后 QSPI 异步队列卡死→中断看门狗重启 */
+            .on_color_trans_done = cira_dma_done_cb,  /* DMA 完成→给信号量，blit/fill 据此同步等待 */
             .user_ctx = NULL,
             .lcd_cmd_bits = 8,    // ST77916 QSPI 命令为 1 字节（曾误写 32 → 每条命令都错）
             .lcd_param_bits = 8,
@@ -212,7 +256,7 @@ static mp_obj_t st77916_blit(size_t n_args, const mp_obj_t *args) {
 
     if ((size_t)(w * h * 2) <= (size_t)g_max_sz) {
         send_window(x, y, w, h);
-        ESP_ERROR_CHECK(esp_lcd_panel_io_tx_color(g_io, 0x2C, bufinfo.buf, (size_t)(w * h * 2)));
+        blit_dma_safe(bufinfo.buf, (size_t)(w * h * 2));
     } else {
         /* 超过单次传输上限：按水平条带分块（每条带高度 rows_per） */
         int rows_per = g_max_sz / (w * 2);
@@ -221,7 +265,7 @@ static mp_obj_t st77916_blit(size_t n_args, const mp_obj_t *args) {
             int hh = (yy + rows_per > h) ? (h - yy) : rows_per;
             send_window(x, y + yy, w, hh);
             const uint8_t *p = (const uint8_t *)bufinfo.buf + (size_t)yy * w * 2;
-            ESP_ERROR_CHECK(esp_lcd_panel_io_tx_color(g_io, 0x2C, p, (size_t)(w * hh * 2)));
+            blit_dma_safe(p, (size_t)(w * hh * 2));
         }
     }
     return mp_const_none;
@@ -236,7 +280,6 @@ static mp_obj_t st77916_fill(size_t n_args, const mp_obj_t *args) {
         mp_raise_ValueError(MP_ERROR_TEXT("st77916 not initialized"));
     }
     int w = self->width, h = self->height;
-    send_window(0, 0, w, h);
     uint8_t *line = malloc((size_t)w * 2);
     if (!line) {
         mp_raise_OSError(MP_ENOMEM);
@@ -245,8 +288,14 @@ static mp_obj_t st77916_fill(size_t n_args, const mp_obj_t *args) {
         line[i * 2]     = (uint8_t)(color & 0xFF);
         line[i * 2 + 1] = (uint8_t)((color >> 8) & 0xFF);
     }
+    /* 关键修复：每行重新设置窗口 (0,y,w,1)，再发 RAMWR。
+       原代码只在循环外 send_window(0,0,w,h) 一次，循环内反复发 0x2C
+       会让 GRAM 指针每次重置到窗口起点 → 实际只有第 0 行被写、其余行黑。
+       每行发完必须等 DMA 完成（wait_dma_done）再覆盖 line，否则异步 DMA 读已释放/覆盖的缓冲。 */
     for (int y = 0; y < h; y++) {
-        ESP_ERROR_CHECK(esp_lcd_panel_io_tx_color(g_io, 0x2C, line, (size_t)(w * 2)));
+        send_window(0, y, w, 1);
+        esp_lcd_panel_io_tx_color(g_io, 0x2C, line, (size_t)(w * 2));
+        wait_dma_done();
     }
     free(line);
     return mp_const_none;

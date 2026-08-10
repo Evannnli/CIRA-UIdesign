@@ -30,7 +30,8 @@ Device Runtime 的星云数学、控制中心布局都从这里对齐。
 | 版本 | 日期 | 固件 | 板子入口 | 状态 | 备注 |
 |------|------|------|----------|------|------|
 | v0.8.7 | 2026-04-06 出厂 | 原厂 Xiaozhi 固件（非 CIRA 自研） | 原厂 `main.py` | 基线/回退点 | 整片备份在 `~/xiaozhi_backup.bin`（16MB，**本地不入库**） |
-| **路线 A · LVGL** | **2026-08-11** | `device-builds/cira-lvgl-firmware-2026-08-11.bin` | `:main.py` = `micropython/cira_splash.py` | **已烧录+探针全绿+开机 splash** | lv_micropython + 自建 ST77916 QSPI C 驱动；探针 L0~L3 全绿 |
+| 路线 A · LVGL（初版） | 2026-08-11 | `device-builds/cira-lvgl-firmware-2026-08-11.bin` | `:main.py` = `micropython/cira_splash.py` | 已烧录+探针全绿+开机 splash | lv_micropython + 自建 ST77916 QSPI C 驱动；**已知 DMA 异步早释放崩板（已修于 build4）** |
+| **路线 A · LVGL（build4·当前）** | **2026-08-11** | `device-builds/cira-lvgl-firmware-2026-08-11b.bin` | `:main.py` = `micropython/cira_splash.py` | **当前实机版本·稳定不崩** | 修 DMA 异步事务+过早释放/覆盖源缓冲→堆损坏静默重启；探针 `tools/minlvgl.py` A→N 全绿 + DONE |
 
 ### 装机版本管理约定
 - 每次重新编译/重烧，都在 `device-builds/` 加一组带日期的 `.bin`，并在本表加一行。
@@ -39,11 +40,15 @@ Device Runtime 的星云数学、控制中心布局都从这里对齐。
 
 ---
 
-## 三、本次提交包含（2026-08-11 路线 A 验证）
+## 三、本次提交包含（2026-08-11 路线 A · build4 稳定性修复）
 
-- 修通 LVGL 9.6.0 三处运行时 API 坑（`cira_lvgl_display.py`）：颜色格式命名空间 /
-  `set_draw_buffers` 双缓冲 / flush `color_p` 是 `lv.Pointer`。
-- 新增 `micropython/cira_splash.py`（开机 splash 入口，部署为 `:main.py`），解决「通电黑屏」。
-- `tools/lvgl_hello.py` 分级自省探针（L0~L3）。
-- `device-builds/` 路线 A 固件三件套 + 烧录/装机说明。
-- `PROJECT_CONTEXT.md` / 记忆同步更新。
+- **修 DMA 异步事务导致的静默崩板**（`micropython/lvgl_build/cira_st77916/st77916.c`）：
+  `esp_lcd_panel_io_tx_color` 颜色数据入队即返回、不等 DMA 完成；旧版提前 `free`/覆盖源
+  缓冲 → 堆损坏 → 延迟 ISR 崩板 → 看门狗静默重启。新增 `on_color_trans_done` ISR 信号量 +
+  `wait_dma_done()` 同步，`blit_dma_safe()` 拷内部 SRAM 后 `esp_cache_msync` 清 D$ 再发。
+- `micropython.cmake` 加 `esp_mm/include` 以取到 `esp_cache.h`。
+- `st77916_init_data.h` 补 `0x3A 0x55`（COLMOD 65K RGB565），修通电黑屏。
+- `cira_lvgl_display.py` flush 兼容 `lv.display_flush_ready` / `disp.flush_ready()` 两种 API 名。
+- `device-builds/` 归档 build4 三件套（`*-2026-08-11b.bin`）+ `flash_args-2026-08-11b.txt`，
+  烧录命令改为**无按键**（USB-Serial/JTAG 模式 `--before default_reset`）。
+- `PROJECT_CONTEXT.md` / `VERSIONS.md` / 记忆同步更新。
