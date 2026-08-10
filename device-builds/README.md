@@ -7,22 +7,31 @@
 - `cira-lvgl-bootloader-<日期>.bin` —— ESP32-S3 bootloader
 - `cira-lvgl-partition-table-<日期>.bin` —— 分区表
 
-## 版本：路线 A · LVGL 固件（2026-08-11）
+## 版本：路线 A · LVGL 固件（2026-08-11，build4 = 当前实机版本）
 
 - 对应源码提交：`micropython/`（`cira_lvgl_display.py` / `cira_splash.py` / `cira_st77916` C 模块）
+- **build4 关键修复（2026-08-11）**：ST77916 像素传输 `esp_lcd_panel_io_tx_color` 是**异步**的（命令走 polling，颜色数据 `spi_device_queue_trans` 入队即返回、不等 DMA 完成）。旧版在 DMA 还在读源缓冲时就 `heap_caps_free`/覆盖 → 堆损坏 → 延迟的 DMA 完成 ISR 在 `sleep` 期间崩板 → 静默看门狗重启（USB 掉=硬复位）。修复：注册 `on_color_trans_done` ISR 回调给二进制信号量，`blit_dma_safe()`/`fill()` 在释放/覆盖源缓冲前 `wait_dma_done()` 等当前这笔 DMA 真正完成；拷到内部 SRAM 后用 `esp_cache_msync` 清 D$。探针 `tools/minlvgl.py` 现跑通 A→N 全绿 + `DONE`，整屏红填充 + LVGL 渲染 `HI` 均不崩。
 - 探针 `tools/lvgl_hello.py`：L0~L3 全绿（L1 红绿蓝各 ~32ms；L2 出 `CIRA · LVGL`+圆环；L3 ~379 FPS）
 - 板子开机入口：`main.py` = `micropython/cira_splash.py`（部署为 `:main.py`），显示持久 splash + 旋转环
 - 构建来源：lv_micropython（MicroPython + LVGL 9.6.0 官方绑定）+ `USER_C_MODULE` 自写 ST77916 QSPI 驱动，
   可复现构建见 `micropython/lvgl_build/README.md`
 
-### 烧录命令（macOS，板子进 ROM 下载模式：按住 BOOT → 短按 RESET → 松开 BOOT）
+### 烧录命令（macOS · 默认无按键，板子跑 LVGL 固件时为 USB-Serial/JTAG 模式）
+
+> 板子当前固件是 USB-Serial/JTAG（下载 PID `0x1001`），esptool 可直连软复位，**无需按 BOOT/RESET**。
+> 仅当板子处于 TinyUSB 设备模式（PID `0x4001`，esptool 软复位失效）才退回物理键：
+> 按住 BOOT → 短按 RESET → 松开 BOOT，再用 `--before no_reset` 烧录。
 
 ```bash
-esptool.py --chip esp32s3 -p /dev/cu.usbmodem101 --before no_reset --after hard_reset \
-  write_flash --flash_mode dio --flash_freq 80m --flash_size 8MB \
-  0x0     device-builds/cira-lvgl-bootloader-2026-08-11.bin \
-  0x8000  device-builds/cira-lvgl-partition-table-2026-08-11.bin \
-  0x10000 device-builds/cira-lvgl-firmware-2026-08-11.bin
+# 方式一：用 flash_args（推荐）
+esptool.py --chip esp32s3 -p /dev/cu.usbmodem101 -b 460800 \
+  --before default_reset --after hard_reset write_flash @device-builds/flash_args-2026-08-11b.txt
+# 方式二：显式三件套
+esptool.py --chip esp32s3 -p /dev/cu.usbmodem101 -b 460800 \
+  --before default_reset --after hard_reset write_flash --flash_mode dio --flash_freq 80m --flash_size 8MB \
+  0x0     device-builds/cira-lvgl-bootloader-2026-08-11b.bin \
+  0x8000  device-builds/cira-lvgl-partition-table-2026-08-11b.bin \
+  0x10000 device-builds/cira-lvgl-firmware-2026-08-11b.bin
 ```
 
 > ⚠️ 烧录前务必先整片备份原厂固件（见 `PROJECT_CONTEXT.md` 备份段），否则无法回退。

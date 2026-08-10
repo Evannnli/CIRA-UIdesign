@@ -13,5 +13,10 @@ target_include_directories(usermod_cira_st77916 INTERFACE
     ${CMAKE_CURRENT_LIST_DIR}
 )
 
+# esp_cache_msync（DMA 前清 D$ 保证 PSRAM/内部 SRAM 缓存一致性）所在头文件目录。
+target_include_directories(usermod_cira_st77916 INTERFACE
+    $ENV{IDF_PATH}/components/esp_mm/include
+)
+
 # 链接到 MicroPython 的用户模块总目标，使其被编译进固件。
 target_link_libraries(usermod INTERFACE usermod_cira_st77916)
