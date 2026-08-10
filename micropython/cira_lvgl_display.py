@@ -89,8 +89,21 @@ def _color_p_to_buf(color_p, size):
 
 
 def init_lvgl_display():
-    """初始化 LVGL + ST77916，返回 (disp, screen_act)。失败降级 dummy。"""
+    """初始化 LVGL + ST77916，返回 (disp, screen_act)。失败降级 dummy。
+
+    幂等：同会话内重复调用直接返回已建好的 (disp, scr)，避免 mpremote run
+    探针与 main.py 自启重复 init 导致堆里堆出第二个 display（会随机崩板）。
+    """
     global _disp, _st
+    if _disp is not None:
+        try:
+            scr = lv.screen_active()
+        except Exception:
+            try:
+                scr = lv.scr_act()
+            except Exception:
+                scr = None
+        return _disp, scr
     lv.init()
     print("[LVGL] init ok, version:", lv.version_major(), lv.version_minor(), lv.version_patch())
 
