@@ -1,0 +1,814 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CIRA 表情系统 Demo</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #1a1a2e;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            color: #fff;
+            overflow: hidden;
+        }
+
+        .container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 2rem;
+        }
+
+        .screen-wrapper {
+            position: relative;
+            width: 380px;
+            height: 380px;
+        }
+
+        .screen-bezel {
+            position: absolute;
+            inset: 0;
+            border-radius: 50%;
+            background: linear-gradient(145deg, #2a2a3e, #1a1a2e);
+            box-shadow: 
+                0 0 0 4px #0f0f1a,
+                0 0 0 6px #3a3a5a,
+                0 20px 60px rgba(0,0,0,0.5),
+                inset 0 2px 4px rgba(255,255,255,0.1);
+        }
+
+        .screen {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            width: 360px;
+            height: 360px;
+            border-radius: 50%;
+            overflow: hidden;
+            background: #000;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        .controls {
+            display: flex;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+            justify-content: center;
+            max-width: 400px;
+        }
+
+        .btn {
+            padding: 0.6rem 1.2rem;
+            border: none;
+            border-radius: 2rem;
+            background: rgba(255,255,255,0.1);
+            color: #fff;
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.15);
+        }
+
+        .btn:hover {
+            background: rgba(255,255,255,0.2);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        .btn.active {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-color: transparent;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .info {
+            text-align: center;
+            opacity: 0.7;
+            font-size: 0.85rem;
+            max-width: 300px;
+            line-height: 1.5;
+        }
+
+        .title {
+            font-size: 1.5rem;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="title">CIRA 表情系统</div>
+        <div class="screen-wrapper">
+            <div class="screen-bezel"></div>
+            <div class="screen">
+                <canvas id="faceCanvas" width="720" height="720"></canvas>
+            </div>
+        </div>
+        <div class="controls">
+            <button class="btn active" data-emotion="happy">😊 开心</button>
+            <button class="btn" data-emotion="curious">🤔 好奇</button>
+            <button class="btn" data-emotion="sleepy">😴 困倦</button>
+            <button class="btn" data-emotion="surprised">😲 惊讶</button>
+            <button class="btn" data-emotion="love">😍 喜欢</button>
+            <button class="btn" data-emotion="thinking">💭 思考</button>
+            <button class="btn" data-emotion="sad">😢 委屈</button>
+            <button class="btn" data-emotion="excited">🤩 兴奋</button>
+        </div>
+        <div class="info">
+            点击按钮切换表情，观察平滑过渡动画
+        </div>
+    </div>
+
+    <script>
+        // ============================================
+        // CIRA 表情系统 - Canvas 2D 参数化绘制
+        // ============================================
+
+        const canvas = document.getElementById('faceCanvas');
+        const ctx = canvas.getContext('2d');
+        const W = canvas.width;
+        const H = canvas.height;
+        const CX = W / 2;
+        const CY = H / 2;
+
+        // ============================================
+        // 表情参数定义
+        // ============================================
+        const EMOTIONS = {
+            happy: {
+                name: '开心',
+                eye: {
+                    leftX: CX - 80, rightX: CX + 80,
+                    y: CY - 40,
+                    width: 55, height: 45,
+                    pupilSize: 18,
+                    pupilOffsetX: 0, pupilOffsetY: -2,
+                    eyelidTop: 0.15,    // 眼睑遮挡比例（0=全开，1=全闭）
+                    eyelidBottom: 0.6,  // 下眼睑上抬（笑眼效果）
+                    curve: 0.3,         // 眼睛弯曲度（正=微笑，负=悲伤）
+                    blinkRate: 0.02,
+                },
+                mouth: {
+                    x: CX, y: CY + 80,
+                    width: 90, height: 35,
+                    curve: 0.8,         // 弯曲度（正=微笑，负=悲伤）
+                    open: 0.2,          // 张开度（0=闭合，1=全开）
+                    teeth: false,
+                },
+                eyebrow: {
+                    leftX: CX - 80, rightX: CX + 80,
+                    y: CY - 100,
+                    curve: 0.3,
+                    height: 15,
+                },
+                color: {
+                    face: '#FFE0B2',
+                    eye: '#FFFFFF',
+                    pupil: '#4A90D9',
+                    mouth: '#E57373',
+                    cheek: 'rgba(255, 138, 128, 0.3)',
+                },
+                breath: 0.015,
+                sway: 0.5,
+            },
+
+            curious: {
+                name: '好奇',
+                eye: {
+                    leftX: CX - 80, rightX: CX + 80,
+                    y: CY - 40,
+                    width: 50, height: 55,  // 眼睛更大
+                    pupilSize: 22,
+                    pupilOffsetX: 15,       // 瞳孔看向一侧
+                    pupilOffsetY: -10,
+                    eyelidTop: 0.1,
+                    eyelidBottom: 0.1,
+                    curve: 0.1,
+                    blinkRate: 0.015,
+                },
+                mouth: {
+                    x: CX, y: CY + 80,
+                    width: 40, height: 20,
+                    curve: 0.2,
+                    open: 0.3,
+                    teeth: false,
+                },
+                eyebrow: {
+                    leftX: CX - 80, rightX: CX + 80,
+                    y: CY - 110,
+                    curve: 0.6,         // 一边高一边低
+                    height: 20,
+                },
+                color: {
+                    face: '#FFE0B2',
+                    eye: '#FFFFFF',
+                    pupil: '#66BB6A',
+                    mouth: '#E57373',
+                    cheek: 'rgba(255, 138, 128, 0.2)',
+                },
+                breath: 0.012,
+                sway: 1.0,
+            },
+
+            sleepy: {
+                name: '困倦',
+                eye: {
+                    leftX: CX - 80, rightX: CX + 80,
+                    y: CY - 35,
+                    width: 55, height: 30,
+                    pupilSize: 16,
+                    pupilOffsetX: 0,
+                    pupilOffsetY: 5,
+                    eyelidTop: 0.6,     // 眼睑下垂
+                    eyelidBottom: 0.2,
+                    curve: 0.05,
+                    blinkRate: 0.005,   // 眨眼更慢
+                },
+                mouth: {
+                    x: CX, y: CY + 80,
+                    width: 50, height: 25,
+                    curve: 0.1,
+                    open: 0.4,
+                    teeth: false,
+                },
+                eyebrow: {
+                    leftX: CX - 80, rightX: CX + 80,
+                    y: CY - 85,
+                    curve: 0.1,
+                    height: 10,
+                },
+                color: {
+                    face: '#FFE0B2',
+                    eye: '#FFFFFF',
+                    pupil: '#9E9E9E',
+                    mouth: '#E57373',
+                    cheek: 'rgba(255, 138, 128, 0.15)',
+                },
+                breath: 0.025,      // 呼吸更慢
+                sway: 0.3,
+            },
+
+            surprised: {
+                name: '惊讶',
+                eye: {
+                    leftX: CX - 85, rightX: CX + 85,
+                    y: CY - 45,
+                    width: 60, height: 65,  // 眼睛很大
+                    pupilSize: 20,
+                    pupilOffsetX: 0,
+                    pupilOffsetY: 0,
+                    eyelidTop: 0.0,
+                    eyelidBottom: 0.0,
+                    curve: 0.0,
+                    blinkRate: 0.03,
+                },
+                mouth: {
+                    x: CX, y: CY + 90,
+                    width: 50, height: 50,  // 嘴巴张大
+                    curve: 0.0,
+                    open: 0.8,
+                    teeth: false,
+                },
+                eyebrow: {
+                    leftX: CX - 85, rightX: CX + 85,
+                    y: CY - 130,            // 眉毛上扬
+                    curve: 0.5,
+                    height: 25,
+                },
+                color: {
+                    face: '#FFE0B2',
+                    eye: '#FFFFFF',
+                    pupil: '#FF7043',
+                    mouth: '#E57373',
+                    cheek: 'rgba(255, 138, 128, 0.25)',
+                },
+                breath: 0.008,
+                sway: 0.2,
+            },
+
+            love: {
+                name: '喜欢',
+                eye: {
+                    leftX: CX - 80, rightX: CX + 80,
+                    y: CY - 40,
+                    width: 55, height: 45,
+                    pupilSize: 22,
+                    pupilOffsetX: 0,
+                    pupilOffsetY: -5,
+                    eyelidTop: 0.2,
+                    eyelidBottom: 0.5,
+                    curve: 0.4,
+                    blinkRate: 0.025,
+                },
+                mouth: {
+                    x: CX, y: CY + 75,
+                    width: 80, height: 30,
+                    curve: 0.9,
+                    open: 0.15,
+                    teeth: true,
+                },
+                eyebrow: {
+                    leftX: CX - 80, rightX: CX + 80,
+                    y: CY - 100,
+                    curve: 0.4,
+                    height: 15,
+                },
+                color: {
+                    face: '#FFE0B2',
+                    eye: '#FFFFFF',
+                    pupil: '#E91E63',       // 粉色瞳孔
+                    mouth: '#E57373',
+                    cheek: 'rgba(255, 82, 82, 0.4)',
+                },
+                breath: 0.018,
+                sway: 0.8,
+            },
+
+            thinking: {
+                name: '思考',
+                eye: {
+                    leftX: CX - 80, rightX: CX + 80,
+                    y: CY - 40,
+                    width: 50, height: 45,
+                    pupilSize: 18,
+                    pupilOffsetX: 20,       // 瞳孔看向右上
+                    pupilOffsetY: -15,
+                    eyelidTop: 0.25,
+                    eyelidBottom: 0.15,
+                    curve: 0.1,
+                    blinkRate: 0.01,
+                },
+                mouth: {
+                    x: CX + 10, y: CY + 80,
+                    width: 45, height: 15,
+                    curve: 0.0,             // 嘴巴平直
+                    open: 0.0,
+                    teeth: false,
+                },
+                eyebrow: {
+                    leftX: CX - 80, rightX: CX + 80,
+                    y: CY - 105,
+                    curve: 0.7,             // 一边挑起
+                    height: 18,
+                },
+                color: {
+                    face: '#FFE0B2',
+                    eye: '#FFFFFF',
+                    pupil: '#7E57C2',
+                    mouth: '#E57373',
+                    cheek: 'rgba(255, 138, 128, 0.1)',
+                },
+                breath: 0.01,
+                sway: 0.3,
+            },
+
+            sad: {
+                name: '委屈',
+                eye: {
+                    leftX: CX - 80, rightX: CX + 80,
+                    y: CY - 35,
+                    width: 50, height: 40,
+                    pupilSize: 18,
+                    pupilOffsetX: 0,
+                    pupilOffsetY: 5,
+                    eyelidTop: 0.4,
+                    eyelidBottom: 0.2,
+                    curve: -0.3,            // 眼睛下垂
+                    blinkRate: 0.008,
+                },
+                mouth: {
+                    x: CX, y: CY + 85,
+                    width: 60, height: 25,
+                    curve: -0.6,            // 嘴角下垂
+                    open: 0.1,
+                    teeth: false,
+                },
+                eyebrow: {
+                    leftX: CX - 80, rightX: CX + 80,
+                    y: CY - 95,
+                    curve: -0.5,            // 眉毛下垂
+                    height: 20,
+                },
+                color: {
+                    face: '#FFE0B2',
+                    eye: '#FFFFFF',
+                    pupil: '#5C6BC0',
+                    mouth: '#E57373',
+                    cheek: 'rgba(255, 138, 128, 0.2)',
+                },
+                breath: 0.02,
+                sway: 0.2,
+            },
+
+            excited: {
+                name: '兴奋',
+                eye: {
+                    leftX: CX - 85, rightX: CX + 85,
+                    y: CY - 45,
+                    width: 60, height: 55,
+                    pupilSize: 24,
+                    pupilOffsetX: 0,
+                    pupilOffsetY: -5,
+                    eyelidTop: 0.05,
+                    eyelidBottom: 0.4,
+                    curve: 0.35,
+                    blinkRate: 0.04,        // 眨眼更快
+                },
+                mouth: {
+                    x: CX, y: CY + 85,
+                    width: 100, height: 45,
+                    curve: 0.95,
+                    open: 0.6,
+                    teeth: true,
+                },
+                eyebrow: {
+                    leftX: CX - 85, rightX: CX + 85,
+                    y: CY - 120,
+                    curve: 0.6,
+                    height: 22,
+                },
+                color: {
+                    face: '#FFE0B2',
+                    eye: '#FFFFFF',
+                    pupil: '#FFD600',
+                    mouth: '#E57373',
+                    cheek: 'rgba(255, 82, 82, 0.5)',
+                },
+                breath: 0.01,
+                sway: 1.5,
+            },
+        };
+
+        // ============================================
+        // 状态管理
+        // ============================================
+        let currentEmotion = 'happy';
+        let targetEmotion = 'happy';
+        let transitionProgress = 1.0;
+        let transitionSpeed = 0.035;
+
+        // 动画状态
+        let blinkTimer = 0;
+        let blinkPhase = 0; // 0=open, 1=closing, 2=closed, 3=opening
+        let blinkAmount = 0;
+        let time = 0;
+        let breathPhase = 0;
+        let swayPhase = 0;
+
+        // 瞳孔微颤
+        let pupilTrembleX = 0;
+        let pupilTrembleY = 0;
+
+        // ============================================
+        // 工具函数
+        // ============================================
+        function lerp(a, b, t) {
+            return a + (b - a) * t;
+        }
+
+        function lerpObj(a, b, t) {
+            const result = {};
+            for (const key in a) {
+                if (typeof a[key] === 'number' && typeof b[key] === 'number') {
+                    result[key] = lerp(a[key], b[key], t);
+                } else if (typeof a[key] === 'object' && !Array.isArray(a[key])) {
+                    result[key] = lerpObj(a[key], b[key], t);
+                } else {
+                    result[key] = t < 0.5 ? a[key] : b[key];
+                }
+            }
+            return result;
+        }
+
+        function easeInOutCubic(t) {
+            return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+        }
+
+        // ============================================
+        // 绘制函数
+        // ============================================
+        function drawFace(params) {
+            const { eye, mouth, eyebrow, color, breath, sway } = params;
+
+            // 清空画布
+            ctx.clearRect(0, 0, W, H);
+
+            // 背景渐变
+            const bgGrad = ctx.createRadialGradient(CX, CY, 0, CX, CY, W / 2);
+            bgGrad.addColorStop(0, '#1a1a2e');
+            bgGrad.addColorStop(1, '#0a0a15');
+            ctx.fillStyle = bgGrad;
+            ctx.fillRect(0, 0, W, H);
+
+            // 呼吸动画
+            breathPhase += breath;
+            const breathScale = 1 + Math.sin(breathPhase) * 0.008;
+
+            // 摇摆动画
+            swayPhase += 0.02;
+            const swayX = Math.sin(swayPhase) * sway * 2;
+            const swayY = Math.cos(swayPhase * 0.7) * sway * 1;
+
+            ctx.save();
+            ctx.translate(CX + swayX, CY + swayY);
+            ctx.scale(breathScale, breathScale);
+            ctx.translate(-CX, -CY);
+
+            // 绘制脸颊红晕
+            drawCheeks(color.cheek);
+
+            // 绘制眉毛
+            drawEyebrows(eyebrow, color.face);
+
+            // 绘制眼睛
+            drawEyes(eye, color);
+
+            // 绘制嘴巴
+            drawMouth(mouth, color.mouth);
+
+            ctx.restore();
+        }
+
+        function drawCheeks(color) {
+            // 左脸颊
+            ctx.beginPath();
+            ctx.ellipse(CX - 120, CY + 30, 35, 25, 0, 0, Math.PI * 2);
+            ctx.fillStyle = color;
+            ctx.fill();
+
+            // 右脸颊
+            ctx.beginPath();
+            ctx.ellipse(CX + 120, CY + 30, 35, 25, 0, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        function drawEyebrows(params, faceColor) {
+            const { leftX, rightX, y, curve, height } = params;
+
+            // 左眉毛
+            ctx.beginPath();
+            ctx.moveTo(leftX - 30, y + curve * 15);
+            ctx.quadraticCurveTo(leftX, y - height, leftX + 30, y + curve * -5);
+            ctx.strokeStyle = 'rgba(100, 80, 60, 0.6)';
+            ctx.lineWidth = 6;
+            ctx.lineCap = 'round';
+            ctx.stroke();
+
+            // 右眉毛
+            ctx.beginPath();
+            ctx.moveTo(rightX - 30, y + curve * -5);
+            ctx.quadraticCurveTo(rightX, y - height, rightX + 30, y + curve * 15);
+            ctx.stroke();
+        }
+
+        function drawEyes(params, colors) {
+            const { leftX, rightX, y, width, height, pupilSize, pupilOffsetX, pupilOffsetY,
+                    eyelidTop, eyelidBottom, curve, blinkRate } = params;
+
+            // 自动眨眼
+            blinkTimer += blinkRate;
+            if (blinkPhase === 0 && blinkTimer > 1.0) {
+                blinkPhase = 1;
+                blinkTimer = 0;
+            }
+            if (blinkPhase === 1) {
+                blinkAmount = Math.min(1, blinkAmount + 0.15);
+                if (blinkAmount >= 1) blinkPhase = 2;
+            } else if (blinkPhase === 2) {
+                blinkTimer += 0.05;
+                if (blinkTimer > 0.1) {
+                    blinkPhase = 3;
+                    blinkTimer = 0;
+                }
+            } else if (blinkPhase === 3) {
+                blinkAmount = Math.max(0, blinkAmount - 0.12);
+                if (blinkAmount <= 0) {
+                    blinkPhase = 0;
+                    blinkAmount = 0;
+                }
+            }
+
+            // 瞳孔微颤
+            pupilTrembleX = Math.sin(time * 3.7) * 1.5 + Math.sin(time * 7.3) * 0.8;
+            pupilTrembleY = Math.cos(time * 4.1) * 1.2 + Math.cos(time * 6.9) * 0.6;
+
+            // 绘制左眼
+            drawSingleEye(leftX, y, width, height, pupilSize, pupilOffsetX, pupilOffsetY,
+                          eyelidTop, eyelidBottom, curve, colors, false);
+
+            // 绘制右眼
+            drawSingleEye(rightX, y, width, height, pupilSize, pupilOffsetX, pupilOffsetY,
+                          eyelidTop, eyelidBottom, curve, colors, true);
+        }
+
+        function drawSingleEye(x, y, w, h, pupilSize, pupilOffX, pupilOffY,
+                                eyelidTop, eyelidBottom, curve, colors, isRight) {
+            ctx.save();
+            ctx.translate(x, y);
+
+            // 眼白（带弯曲的椭圆）
+            const actualH = h * (1 - blinkAmount * 0.9);
+
+            // 绘制眼白
+            ctx.beginPath();
+            ctx.ellipse(0, 0, w / 2, actualH / 2, 0, 0, Math.PI * 2);
+            ctx.fillStyle = colors.eye;
+            ctx.fill();
+
+            // 绘制瞳孔
+            const pupilX = pupilOffX + pupilTrembleX;
+            const pupilY = pupilOffY + pupilTrembleY + curve * 10;
+            ctx.beginPath();
+            ctx.arc(pupilX, pupilY, pupilSize, 0, Math.PI * 2);
+            ctx.fillStyle = colors.pupil;
+            ctx.fill();
+
+            // 瞳孔高光
+            ctx.beginPath();
+            ctx.arc(pupilX - pupilSize * 0.3, pupilY - pupilSize * 0.3, pupilSize * 0.3, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+            ctx.fill();
+
+            // 眼睑效果（弯曲度）
+            if (curve > 0.1 || eyelidBottom > 0.1) {
+                // 下眼睑上抬（笑眼效果）
+                const bottomLift = eyelidBottom * actualH * 0.5;
+                ctx.beginPath();
+                ctx.moveTo(-w / 2 - 5, actualH / 2);
+                ctx.quadraticCurveTo(0, actualH / 2 - bottomLift + curve * 20, w / 2 + 5, actualH / 2);
+                ctx.lineTo(w / 2 + 5, actualH / 2 + 30);
+                ctx.lineTo(-w / 2 - 5, actualH / 2 + 30);
+                ctx.closePath();
+                ctx.fillStyle = '#000';
+                ctx.fill();
+            }
+
+            // 上眼睑
+            if (eyelidTop > 0.05 || blinkAmount > 0) {
+                const topLid = Math.max(eyelidTop, blinkAmount) * actualH * 0.6;
+                ctx.beginPath();
+                ctx.moveTo(-w / 2 - 5, -actualH / 2);
+                ctx.quadraticCurveTo(0, -actualH / 2 + topLid - curve * 10, w / 2 + 5, -actualH / 2);
+                ctx.lineTo(w / 2 + 5, -actualH / 2 - 30);
+                ctx.lineTo(-w / 2 - 5, -actualH / 2 - 30);
+                ctx.closePath();
+                ctx.fillStyle = '#000';
+                ctx.fill();
+            }
+
+            ctx.restore();
+        }
+
+        function drawMouth(params, color) {
+            const { x, y, width, height, curve, open, teeth } = params;
+
+            ctx.save();
+            ctx.translate(x, y);
+
+            if (open > 0.15) {
+                // 张开的嘴巴
+                const openH = height * open;
+
+                // 嘴巴轮廓
+                ctx.beginPath();
+                ctx.moveTo(-width / 2, 0);
+                ctx.quadraticCurveTo(-width / 4, -openH * 0.3, 0, -openH * 0.2);
+                ctx.quadraticCurveTo(width / 4, -openH * 0.3, width / 2, 0);
+                ctx.quadraticCurveTo(width / 4, openH, 0, openH);
+                ctx.quadraticCurveTo(-width / 4, openH, -width / 2, 0);
+                ctx.closePath();
+                ctx.fillStyle = '#D32F2F';
+                ctx.fill();
+
+                // 舌头
+                if (open > 0.4) {
+                    ctx.beginPath();
+                    ctx.ellipse(0, openH * 0.6, width * 0.25, openH * 0.3, 0, 0, Math.PI);
+                    ctx.fillStyle = '#E57373';
+                    ctx.fill();
+                }
+
+                // 牙齿
+                if (teeth && open > 0.3) {
+                    ctx.beginPath();
+                    ctx.moveTo(-width * 0.3, -openH * 0.15);
+                    ctx.lineTo(width * 0.3, -openH * 0.15);
+                    ctx.lineTo(width * 0.25, -openH * 0.05);
+                    ctx.lineTo(-width * 0.25, -openH * 0.05);
+                    ctx.closePath();
+                    ctx.fillStyle = '#FFFFFF';
+                    ctx.fill();
+                }
+            } else {
+                // 闭合的嘴巴（微笑/悲伤曲线）
+                ctx.beginPath();
+                ctx.moveTo(-width / 2, 0);
+                ctx.quadraticCurveTo(0, curve * height, width / 2, 0);
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 5;
+                ctx.lineCap = 'round';
+                ctx.stroke();
+            }
+
+            ctx.restore();
+        }
+
+        // ============================================
+        // 动画循环
+        // ============================================
+        function animate() {
+            time += 0.016;
+
+            // 处理表情过渡
+            if (transitionProgress < 1.0) {
+                transitionProgress = Math.min(1.0, transitionProgress + transitionSpeed);
+                const easedProgress = easeInOutCubic(transitionProgress);
+
+                const fromEmotion = EMOTIONS[currentEmotion];
+                const toEmotion = EMOTIONS[targetEmotion];
+                const interpolated = lerpObj(fromEmotion, toEmotion, easedProgress);
+
+                drawFace(interpolated);
+
+                if (transitionProgress >= 1.0) {
+                    currentEmotion = targetEmotion;
+                }
+            } else {
+                drawFace(EMOTIONS[currentEmotion]);
+            }
+
+            requestAnimationFrame(animate);
+        }
+
+        // ============================================
+        // 交互控制
+        // ============================================
+        function setEmotion(emotion) {
+            if (emotion === targetEmotion && transitionProgress >= 1.0) return;
+
+            currentEmotion = transitionProgress >= 1.0 ? currentEmotion : targetEmotion;
+            targetEmotion = emotion;
+            transitionProgress = 0;
+
+            // 更新按钮状态
+            document.querySelectorAll('.btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.emotion === emotion);
+            });
+        }
+
+        // 绑定按钮事件
+        document.querySelectorAll('.btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                setEmotion(btn.dataset.emotion);
+            });
+        });
+
+        // 键盘快捷键
+        const emotionKeys = {
+            '1': 'happy',
+            '2': 'curious',
+            '3': 'sleepy',
+            '4': 'surprised',
+            '5': 'love',
+            '6': 'thinking',
+            '7': 'sad',
+            '8': 'excited',
+        };
+
+        document.addEventListener('keydown', (e) => {
+            if (emotionKeys[e.key]) {
+                setEmotion(emotionKeys[e.key]);
+            }
+        });
+
+        // 启动动画
+        animate();
+    </script>
+</body>
+</html>

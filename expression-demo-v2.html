@@ -1,0 +1,809 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CIRA 表情系统 v2 · 大眼版本</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+
+body {
+  background: #f4ede4;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", sans-serif;
+  color: #2a2a2a;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 32px 16px;
+}
+
+/* === 头部 === */
+header {
+  text-align: center;
+  margin-bottom: 24px;
+}
+header h1 {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+header p {
+  font-size: 13px;
+  color: #8a7e6e;
+  margin-top: 4px;
+}
+
+/* === 圆屏 360×360（真实比例） === */
+.stage {
+  width: 360px;
+  height: 360px;
+  border-radius: 50%;
+  background: #fffdf8;
+  box-shadow:
+    0 6px 24px rgba(120, 90, 60, 0.18),
+    inset 0 0 0 6px #fff,
+    inset 0 0 0 8px rgba(0,0,0,0.04);
+  overflow: hidden;
+  position: relative;
+}
+canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* === 控制条 === */
+.controls {
+  margin-top: 24px;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  width: 360px;
+}
+.controls button {
+  background: #fff;
+  border: 2px solid #2a2a2a;
+  border-radius: 999px;
+  padding: 10px 12px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: transform 0.15s, background 0.15s;
+  font-family: inherit;
+  color: #2a2a2a;
+}
+.controls button:hover {
+  background: #ffe4ec;
+  transform: translateY(-2px);
+}
+.controls button.active {
+  background: #2a2a2a;
+  color: #fff;
+}
+
+footer {
+  margin-top: 24px;
+  font-size: 11px;
+  color: #b0a695;
+  text-align: center;
+  max-width: 360px;
+}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>CIRA 表情系统 · v2</h1>
+  <p>大眼 · 整脸 · 白底 + 粉红点缀</p>
+</header>
+
+<div class="stage">
+  <canvas id="face" width="360" height="360"></canvas>
+</div>
+
+<div class="controls">
+  <button data-emo="happy">开心</button>
+  <button data-emo="angry">生气</button>
+  <button data-emo="curious">好奇</button>
+  <button data-emo="sleepy">困倦</button>
+  <button data-emo="laugh">大笑</button>
+  <button data-emo="silly">俏皮</button>
+  <button data-emo="surprised">惊喜</button>
+  <button data-emo="love">喜欢</button>
+</div>
+
+<footer>
+点击 / 数字键 1-8 切换 · 鼠标移动脸会看向你
+</footer>
+
+<script>
+/* ============================================================
+ *  表情系统 v2 · 设计要点
+ *  ─────────────────────────────────────────────────────────
+ *  · 眼睛大、宽：两只眼横跨整个面部宽度（不挤中心）
+ *  · 黑白主线 + 局部粉红：脸颊、舌尖、爱心装饰
+ *  · 整张脸当画布：眉毛在上、脸颊在中、嘴巴在下都参与表达
+ *  · 动画流畅：
+ *      - 状态切换 lerp 过渡（300-400ms）
+ *      - 自动眨眼（不同情绪不同频率）
+ *      - 瞳孔跟踪鼠标 / 视线飘动
+ *      - 眼眶轻微呼吸（scale 微变化）
+ *  · 参考风格：参考图的大眼卡通 + 粉润感
+ * ============================================================ */
+
+const canvas = document.getElementById('face');
+const ctx = canvas.getContext('2d');
+const W = 360, H = 360;
+const CX = W / 2, CY = H / 2;
+
+/* ─── 工具函数 ─── */
+const lerp = (a, b, t) => a + (b - a) * t;
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const easeInOut = t => t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+
+/* ─── 表情参数 ───
+ *  每一项都是一个"目标"，渲染时与当前值 lerp
+ *  数值含义见注释
+ */
+const EMOJI_PRESETS = {
+  // 开心：眯弯笑眼 + 腮红 + 小嘴
+  happy: {
+    eyeScale: 0.55,        // 眼眶大小（相对基础 1）
+    eyeSpacing: 0.50,      // 两眼中心距（相对屏宽）
+    eyeTilt: 0,            // 眼睛倾斜（向上/向下，弧度）
+    pupilScale: 0.7,       // 瞳孔相对眼大小
+    pupilY: 0,             // 瞳孔 Y 偏移
+    browLift: -10,         // 眉毛下垂/上扬（>0 下压，<0 上挑）
+    browTilt: 0.15,        // 眉毛倾角（外侧上挑 = 开心）
+    mouthOpen: 0.25,       // 嘴张开度
+    mouthWidth: 0.35,      // 嘴宽度（相对屏宽）
+    mouthCurve: 0.55,      // 嘴曲线（>0 微笑，<0 哭）
+    cheekIntensity: 0.7,   // 腮红强度
+    showBlush: true,       // 是否显腮红
+    showTeeth: false,
+    extraTongue: false,
+    extraHeart: false,
+    blinkRate: 4500,       // 自动眨眼间隔 ms
+    eyeStyle: 'closed_smile',  // 眼睛形态（closed_smile | half | round | angry | sparkle）
+  },
+
+  // 生气：粗眉压眼 + 锐利目光
+  angry: {
+    eyeScale: 0.85,
+    eyeSpacing: 0.50,
+    eyeTilt: 0,
+    pupilScale: 0.6,
+    pupilY: -0.05,
+    browLift: 18,
+    browTilt: -0.5,        // 内低外高（V 字眉）
+    mouthOpen: 0.10,
+    mouthWidth: 0.30,
+    mouthCurve: -0.20,
+    cheekIntensity: 0.2,
+    showBlush: false,
+    showTeeth: true,
+    extraTongue: false,
+    extraHeart: false,
+    blinkRate: 2500,
+    eyeStyle: 'angry',
+  },
+
+  // 好奇：大眼睛 + 瞳孔偏移 + 微微歪头眉
+  curious: {
+    eyeScale: 1.15,
+    eyeSpacing: 0.50,
+    eyeTilt: 0,
+    pupilScale: 0.55,
+    pupilY: 0,
+    browLift: -5,
+    browTilt: 0.20,        // 左眉挑起
+    mouthOpen: 0.05,
+    mouthWidth: 0.30,
+    mouthCurve: 0.15,
+    cheekIntensity: 0.3,
+    showBlush: false,
+    showTeeth: false,
+    extraTongue: false,
+    extraHeart: false,
+    blinkRate: 5000,
+    eyeStyle: 'round',
+  },
+
+  // 困倦：半闭眼 + 微微张嘴 + 重腮红
+  sleepy: {
+    eyeScale: 0.70,
+    eyeSpacing: 0.50,
+    eyeTilt: 0,
+    pupilScale: 0.4,
+    pupilY: 0.10,
+    browLift: 6,
+    browTilt: 0.05,
+    mouthOpen: 0.15,
+    mouthWidth: 0.28,
+    mouthCurve: 0,
+    cheekIntensity: 0.85,
+    showBlush: true,
+    showTeeth: false,
+    extraTongue: false,
+    extraHeart: false,
+    blinkRate: 2200,
+    eyeStyle: 'half',
+  },
+
+  // 大笑：闭弯笑眼 + 张嘴露牙 + 红脸
+  laugh: {
+    eyeScale: 0.45,
+    eyeSpacing: 0.50,
+    eyeTilt: 0,
+    pupilScale: 0,
+    pupilY: 0,
+    browLift: -8,
+    browTilt: 0.10,
+    mouthOpen: 0.85,
+    mouthWidth: 0.50,
+    mouthCurve: 0.65,
+    cheekIntensity: 0.95,
+    showBlush: true,
+    showTeeth: true,       // 露齿
+    extraTongue: true,     // 舌尖
+    extraHeart: false,
+    blinkRate: 4500,
+    eyeStyle: 'closed_smile',
+  },
+
+  // 俏皮：歪头 + 半闭眼 + 吐舌
+  silly: {
+    eyeScale: 0.80,
+    eyeSpacing: 0.50,
+    eyeTilt: 0,
+    pupilScale: 0.45,
+    pupilY: 0,
+    browLift: -3,
+    browTilt: 0.30,        // 单眉挑起
+    mouthOpen: 0.40,
+    mouthWidth: 0.32,
+    mouthCurve: 0.30,
+    cheekIntensity: 0.6,
+    showBlush: true,
+    showTeeth: false,
+    extraTongue: true,
+    extraHeart: false,
+    blinkRate: 3800,
+    eyeStyle: 'half',
+  },
+
+  // 惊喜：圆睁大眼 + 张大嘴 + 头上动感线
+  surprised: {
+    eyeScale: 1.30,
+    eyeSpacing: 0.50,
+    eyeTilt: 0,
+    pupilScale: 0.40,
+    pupilY: 0,
+    browLift: -25,
+    browTilt: 0,
+    mouthOpen: 1.0,        // 张最大
+    mouthWidth: 0.45,
+    mouthCurve: 0,
+    cheekIntensity: 0.4,
+    showBlush: false,
+    showTeeth: false,
+    extraTongue: false,
+    extraHeart: false,
+    blinkRate: 7000,
+    eyeStyle: 'star',      // 星星眼
+  },
+
+  // 喜欢：眯眼 + 红脸 + 爱心
+  love: {
+    eyeScale: 0.50,
+    eyeSpacing: 0.50,
+    eyeTilt: 0,
+    pupilScale: 0,
+    pupilY: 0,
+    browLift: -12,
+    browTilt: 0.20,
+    mouthOpen: 0.20,
+    mouthWidth: 0.32,
+    mouthCurve: 0.55,
+    cheekIntensity: 1.0,
+    showBlush: true,
+    showTeeth: false,
+    extraTongue: false,
+    extraHeart: true,
+    blinkRate: 3500,
+    eyeStyle: 'closed_smile',
+  },
+};
+
+/* ─── 当前 / 目标状态 ─── */
+let current = { ...EMOJI_PRESETS.happy };
+let target  = { ...EMOJI_PRESETS.happy };
+let currentEyeStyle = 'closed_smile';
+let targetEyeStyle = 'closed_smile';
+
+/* ─── 鼠标视线 ─── */
+let mouseX = CX, mouseY = CY;
+
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  const px = (e.clientX - rect.left) * (W / rect.width);
+  const py = (e.clientY - rect.top) * (H / rect.height);
+  mouseX = px;
+  mouseY = py;
+});
+
+canvas.addEventListener('mouseleave', () => {
+  mouseX = CX;
+  mouseY = CY;
+});
+
+/* ─── 眨眼 ─── */
+let blinkProgress = 0;  // 0=睁，1=全闭
+let nextBlinkAt = performance.now() + 4000;
+
+function scheduleNextBlink() {
+  nextBlinkAt = performance.now() + current.blinkRate + (Math.random() - 0.5) * 800;
+}
+
+function updateBlink(dt) {
+  const now = performance.now();
+  if (now >= nextBlinkAt) {
+    blinkProgress = Math.min(1, blinkProgress + dt / 0.10);   // 0.10s 闭
+    if (blinkProgress >= 1) {
+      scheduleNextBlink();
+    }
+  } else if (blinkProgress > 0) {
+    blinkProgress = Math.max(0, blinkProgress - dt / 0.13);    // 0.13s 张
+  }
+}
+
+/* ─── 切换表情 ─── */
+function setEmo(name) {
+  const p = EMOJI_PRESETS[name];
+  if (!p) return;
+  target = { ...p };
+  targetEyeStyle = p.eyeStyle;
+  // 高亮按钮
+  document.querySelectorAll('.controls button').forEach(b => {
+    b.classList.toggle('active', b.dataset.emo === name);
+  });
+  scheduleNextBlink();
+}
+
+// 绑定按钮
+document.querySelectorAll('.controls button').forEach(b => {
+  b.addEventListener('click', () => setEmo(b.dataset.emo));
+});
+// 数字键 1-8
+document.addEventListener('keydown', e => {
+  const map = ['happy','angry','curious','sleepy','laugh','silly','surprised','love'];
+  const idx = parseInt(e.key, 10) - 1;
+  if (idx >= 0 && idx < map.length) setEmo(map[idx]);
+});
+
+// 默认选中
+document.querySelector('.controls button[data-emo="happy"]').classList.add('active');
+
+/* ============================================================
+ *  渲染
+ * ============================================================ */
+
+function lerpColor(c1, c2, t) {
+  return [
+    Math.round(lerp(c1[0], c2[0], t)),
+    Math.round(lerp(c1[1], c2[1], t)),
+    Math.round(lerp(c1[2], c2[2], t)),
+  ];
+}
+
+// 给定情绪颜色返回 RGB
+function colorOf(key) {
+  // 目前只白/粉/黑/红，柔化即可
+  const map = {
+    bg:     [255, 253, 248],   // 米白
+    line:   [30, 30, 36],      // 主线（接近黑）
+    lineSoft:[80, 80, 90],     // 副线（深灰）
+    pink:   [255, 165, 186],   // 粉（脸颊/舌/心）
+    pinkDeep:[255, 110, 140],  // 深粉
+    red:    [232, 60, 70],     // 装饰红
+    white:  [255, 255, 255],
+  };
+  return map[key];
+}
+
+function smoothPath(pts) {
+  // 给定点数组 [ [x,y], ... ] 用 cardinal spline 平滑
+  if (pts.length < 2) return '';
+  let d = `M ${pts[0][0]} ${pts[0][1]}`;
+  const tension = 0.35;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i];
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const p3 = pts[i + 2] || p2;
+    const c1x = p1[0] + (p2[0] - p0[0]) * tension;
+    const c1y = p1[1] + (p2[1] - p0[1]) * tension;
+    const c2x = p2[0] - (p3[0] - p1[0]) * tension;
+    const c2y = p2[1] - (p3[1] - p1[1]) * tension;
+    d += ` C ${c1x} ${c1y}, ${c2x} ${c2y}, ${p2[0]} ${p2[1]}`;
+  }
+  return d;
+}
+
+/* ─── 画眼睛 ───
+ *  根据 eyeStyle 不同画法：
+ *  closed_smile: 弯线（笑）
+ *  half: 上眼睑大幅下垂，半闭
+ *  round: 大圆形眼眶
+ *  angry: 圆形但上加锯齿眉
+ *  sparkle: 大圆 + 星星
+ *  star: 圆中带星
+ */
+function drawEye(cx, cy, side /* +1右 -1左 */) {
+  const s = current.eyeScale;
+  const baseR = 38 * s;                       // 眼眶基础半径（眼睛很大）
+  const tilt = current.eyeTilt;               // 整体倾斜
+  const pupilRel = baseR * 0.55 * current.pupilScale;
+  const pupilYOff = baseR * current.pupilY;
+
+  // 眨眼覆盖：把眼眶整体压扁
+  const blinkY = lerp(1, 0.05, blinkProgress);
+
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(tilt);
+  ctx.scale(1, blinkY);
+
+  /* 眼眶白色填充 */
+  ctx.beginPath();
+  ctx.ellipse(0, 0, baseR * 1.05, baseR * 0.85, 0, 0, Math.PI * 2);
+  ctx.fillStyle = '#fffdf8';
+  ctx.fill();
+
+  /* 眼眶粗黑色轮廓 */
+  ctx.beginPath();
+  ctx.ellipse(0, 0, baseR * 1.05, baseR * 0.85, 0, 0, Math.PI * 2);
+  ctx.strokeStyle = colorOf('line').join(',');
+  ctx.lineWidth = 4.5;
+  ctx.lineJoin = 'round';
+  ctx.stroke();
+  ctx.strokeStyle = `rgb(${colorOf('line').join(',')})`;
+  ctx.lineWidth = 5;
+  ctx.stroke();
+
+  /* 根据风格画内部 */
+  if (currentEyeStyle === 'closed_smile') {
+    // 弯弯笑弧线（参考图左下那种俏皮眯眼）
+    ctx.beginPath();
+    // 上半椭圆用粗弧
+    const pts = [];
+    for (let i = 0; i <= 20; i++) {
+      const t = i / 20;
+      const ang = Math.PI + t * Math.PI;       // 从左到右的下弧
+      pts.push([Math.cos(ang) * baseR * 0.85, Math.sin(ang) * baseR * 0.55 + baseR * 0.10]);
+    }
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.strokeStyle = `rgb(${colorOf('line').join(',')})`;
+    ctx.lineWidth = 6;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+  } else if (currentEyeStyle === 'half') {
+    // 半闭：上半遮罩粗线
+    ctx.beginPath();
+    ctx.moveTo(-baseR * 1.0, -baseR * 0.30);
+    ctx.quadraticCurveTo(0, baseR * 0.20, baseR * 1.0, -baseR * 0.30);
+    ctx.lineWidth = 12;
+    ctx.strokeStyle = `rgb(${colorOf('line').join(',')})`;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+    // 下半露白 + 瞳孔
+    ctx.beginPath();
+    ctx.ellipse(0, baseR * 0.18, baseR * 0.5, baseR * 0.30, 0, 0, Math.PI * 2);
+    ctx.fillStyle = `rgb(${colorOf('line').join(',')})`;
+    ctx.fill();
+  } else if (currentEyeStyle === 'angry') {
+    // 圆眼 + 黑瞳
+    ctx.beginPath();
+    ctx.ellipse(0, baseR * 0.05, baseR * 0.55, baseR * 0.55, 0, 0, Math.PI * 2);
+    ctx.fillStyle = `rgb(${colorOf('line').join(',')})`;
+    ctx.fill();
+    // 高光小圆
+    ctx.beginPath();
+    ctx.arc(-baseR * 0.15, baseR * 0.0, baseR * 0.18, 0, Math.PI * 2);
+    ctx.fillStyle = '#fff';
+    ctx.fill();
+  } else if (currentEyeStyle === 'star' || currentEyeStyle === 'round') {
+    // 圆眼 + 大黑瞳 + 高光
+    ctx.beginPath();
+    ctx.ellipse(0, baseR * 0.05, baseR * 0.55, baseR * 0.55, 0, 0, Math.PI * 2);
+    ctx.fillStyle = `rgb(${colorOf('line').join(',')})`;
+    ctx.fill();
+    // 高光
+    ctx.beginPath();
+    ctx.arc(-baseR * 0.18, baseR * 0.0, baseR * 0.18, 0, Math.PI * 2);
+    ctx.fillStyle = '#fff';
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(baseR * 0.22, baseR * 0.25, baseR * 0.10, 0, Math.PI * 2);
+    ctx.fillStyle = '#fff';
+    ctx.fill();
+  } else if (currentEyeStyle === 'sparkle') {
+    // 星星眼
+    drawStar(0, 0, baseR * 0.85, baseR * 0.40, 4, side);
+  }
+
+  ctx.restore();
+}
+
+/* ─── 星星 ─── */
+function drawStar(cx, cy, ro, ri, n, side) {
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.beginPath();
+  for (let i = 0; i < n * 2; i++) {
+    const r = i % 2 === 0 ? ro : ri;
+    const a = (Math.PI / n) * i - Math.PI / 2;
+    const x = Math.cos(a) * r;
+    const y = Math.sin(a) * r;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  ctx.fillStyle = 'rgb(30,30,36)';
+  ctx.fill();
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = 'rgb(30,30,36)';
+  ctx.stroke();
+  ctx.restore();
+}
+
+/* ─── 画眉毛 ─── */
+function drawBrow(cx, cy, side) {
+  const lift = current.browLift * side;     // 单边偏移
+  const tilt = current.browTilt;            // 倾角
+  const len = 70 * current.eyeScale;
+
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(tilt * 0.5);
+  ctx.beginPath();
+  // 粗弧线
+  ctx.moveTo(-len, 0);
+  ctx.quadraticCurveTo(0, lift * 0.4, len, lift);
+  ctx.lineWidth = 11;
+  ctx.strokeStyle = `rgb(${colorOf('line').join(',')})`;
+  ctx.lineCap = 'round';
+  ctx.stroke();
+  ctx.restore();
+}
+
+/* ─── 画脸颊（粉） ─── */
+function drawCheek(cx, cy, r) {
+  const alpha = current.cheekIntensity;
+  if (alpha < 0.01 || !current.showBlush) return;
+  ctx.save();
+  ctx.globalAlpha = alpha * 0.7;
+  const grad = ctx.createRadialGradient(cx, cy, r * 0.1, cx, cy, r);
+  grad.addColorStop(0, `rgba(255, 165, 186, 0.85)`);
+  grad.addColorStop(1, `rgba(255, 165, 186, 0)`);
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, r, r * 0.6, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+/* ─── 画嘴 ─── */
+function drawMouth() {
+  const mw = current.mouthWidth * W;
+  const open = current.mouthOpen;
+  const curve = current.mouthCurve;
+  const mx = CX;
+  const my = CY + 90;            // 嘴位置在脸中下
+
+  if (open < 0.05) {
+    // 闭合微笑/平嘴
+    ctx.beginPath();
+    const pts = [];
+    const segs = 16;
+    for (let i = 0; i <= segs; i++) {
+      const t = i / segs;
+      const x = mx - mw / 2 + t * mw;
+      const y = my + Math.sin(t * Math.PI) * 14 * curve;
+      pts.push([x, y]);
+    }
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.strokeStyle = `rgb(${colorOf('line').join(',')})`;
+    ctx.lineWidth = 8;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+    return;
+  }
+
+  // 张嘴
+  const height = 30 + open * 50;
+  ctx.save();
+
+  // 外轮廓（嘴巴形状 = 圆角矩形 + 下弧）
+  ctx.beginPath();
+  const left = mx - mw / 2;
+  const right = mx + mw / 2;
+  const top = my - height * 0.55;
+  const bottom = my + height * (1 + curve * 0.4);
+
+  // 上唇
+  ctx.moveTo(left, my);
+  ctx.quadraticCurveTo(mx, top, right, my);
+  // 下唇（下垂/上扬）
+  ctx.quadraticCurveTo(mx, bottom + 20 * (1 - curve), left, my);
+  ctx.closePath();
+  ctx.fillStyle = `rgb(${colorOf('line').join(',')})`;
+  ctx.fill();
+
+  // 红唇内饰
+  ctx.beginPath();
+  ctx.moveTo(left + 6, my);
+  ctx.quadraticCurveTo(mx, top + 4, right - 6, my);
+  ctx.quadraticCurveTo(mx, bottom + 8 * (1 - curve), left + 6, my);
+  ctx.closePath();
+  ctx.fillStyle = `rgb(${colorOf('red').join(',')})`;
+  ctx.fill();
+
+  // 牙齿
+  if (current.showTeeth) {
+    ctx.beginPath();
+    ctx.moveTo(left + 12, my + 2);
+    ctx.lineTo(right - 12, my + 2);
+    ctx.lineTo(right - 12, top + 14);
+    ctx.lineTo(left + 12, top + 14);
+    ctx.closePath();
+    ctx.fillStyle = '#fff';
+    ctx.fill();
+    // 齿缝
+    ctx.beginPath();
+    ctx.moveTo(left + mw * 0.25, my + 2);
+    ctx.lineTo(left + mw * 0.25, top + 14);
+    ctx.strokeStyle = `rgb(${colorOf('lineSoft').join(',')})`;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(left + mw * 0.50, my + 2);
+    ctx.lineTo(left + mw * 0.50, top + 14);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(left + mw * 0.75, my + 2);
+    ctx.lineTo(left + mw * 0.75, top + 14);
+    ctx.stroke();
+  }
+
+  // 舌尖
+  if (current.extraTongue) {
+    ctx.beginPath();
+    ctx.ellipse(mx, my + height * 0.7, 14, 18, 0, 0, Math.PI * 2);
+    ctx.fillStyle = `rgb(${colorOf('pink').join(',')})`;
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(mx - 14, my + height * 0.7);
+    ctx.lineTo(mx + 14, my + height * 0.7);
+    ctx.strokeStyle = `rgb(${colorOf('pinkDeep').join(',')})`;
+    ctx.lineWidth = 3;
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+/* ─── 爱心装饰（love 模式） ─── */
+function drawHeart(cx, cy, size) {
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.beginPath();
+  ctx.moveTo(0, size * 0.3);
+  ctx.bezierCurveTo(0, -size * 0.2, -size, -size * 0.2, -size, size * 0.2);
+  ctx.bezierCurveTo(-size, size * 0.6, 0, size * 0.9, 0, size * 1.2);
+  ctx.bezierCurveTo(0, size * 0.9, size, size * 0.6, size, size * 0.2);
+  ctx.bezierCurveTo(size, -size * 0.2, 0, -size * 0.2, 0, size * 0.3);
+  ctx.closePath();
+  ctx.fillStyle = `rgb(${colorOf('red').join(',')})`;
+  ctx.fill();
+  ctx.strokeStyle = `rgb(${colorOf('line').join(',')})`;
+  ctx.lineWidth = 3;
+  ctx.stroke();
+  ctx.restore();
+}
+
+/* ─── 头上动感线（惊喜模式） ─── */
+function drawSurpriseLines() {
+  const lines = [
+    [-85, 30], [85, 30], [-110, 70], [110, 70], [-65, 0], [65, 0]
+  ];
+  ctx.save();
+  ctx.strokeStyle = `rgb(${colorOf('line').join(',')})`;
+  ctx.lineWidth = 6;
+  ctx.lineCap = 'round';
+  for (const [dx, dy] of lines) {
+    const x = CX + dx;
+    const y = CY - 100 + dy;
+    const ang = Math.atan2(dy, dx);
+    ctx.beginPath();
+    ctx.moveTo(x - Math.cos(ang) * 14, y - Math.sin(ang) * 14);
+    ctx.lineTo(x + Math.cos(ang) * 14, y + Math.sin(ang) * 14);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/* ============================================================
+ *  主循环
+ * ============================================================ */
+let lastTime = performance.now();
+
+function tick(now) {
+  const dt = Math.min(0.05, (now - lastTime) / 1000);
+  lastTime = now;
+
+  // 状态过渡
+  const k = 1 - Math.pow(0.001, dt);   // 时间无关的插值系数
+  for (const key in target) {
+    if (typeof target[key] === 'number') {
+      current[key] = lerp(current[key], target[key], k);
+    } else {
+      current[key] = target[key];
+    }
+  }
+  // eyeStyle 切换时机（任意一个数值差异大时切）
+  if (currentEyeStyle !== targetEyeStyle) {
+    const almostDone = Object.keys(target).every(
+      k => typeof target[k] !== 'number' || Math.abs(current[k] - target[k]) < 0.05
+    );
+    if (almostDone) currentEyeStyle = targetEyeStyle;
+  }
+
+  updateBlink(dt);
+
+  // 清屏（米白底）
+  ctx.fillStyle = '#fffdf8';
+  ctx.fillRect(0, 0, W, H);
+
+  /* 绘制次序：眉 → 颊 → 眼 → 嘴 → 装饰 */
+  // 眉（位于眼上方 60 左右）
+  const eyeY = CY - 25;
+  const eyeXOff = W * current.eyeSpacing * 0.5;
+  drawBrow(CX - eyeXOff, eyeY - 60, -1);
+  drawBrow(CX + eyeXOff, eyeY - 60, +1);
+
+  // 颊
+  drawCheek(CX - 110, CY + 35, 38);
+  drawCheek(CX + 110, CY + 35, 38);
+
+  // 眼
+  drawEye(CX - eyeXOff, eyeY, -1);
+  drawEye(CX + eyeXOff, eyeY, +1);
+
+  // 嘴
+  drawMouth();
+
+  // 装饰：love 心 + surprise 动感线
+  if (current.extraHeart) {
+    const t = (now / 600) % (Math.PI * 2);
+    const yOff = Math.sin(t) * 8;
+    drawHeart(CX, CY - 90 + yOff, 18);
+    drawHeart(CX - 35, CY - 70 + yOff, 12);
+    drawHeart(CX + 35, CY - 70 + yOff, 12);
+  }
+  if (currentEyeStyle === 'star' || targetEyeStyle === 'surprised') {
+    // 当目标是 surprise 时显示
+    drawSurpriseLines();
+  }
+
+  requestAnimationFrame(tick);
+}
+
+requestAnimationFrame(tick);
+
+</script>
+</body>
+</html>
