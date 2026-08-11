@@ -31,10 +31,23 @@ class TCA9554:
         raise last
 
     def init(self, out=0xFF):
-        """配置全部为输出，并写入输出电平（默认 0xFF 全高=释放所有复位）。"""
+        """配置全部为输出，先释放所有复位，再对 LCD/Touch 复位线发低有效脉冲。
+
+        原厂固件流程：TCA9554 EXIO0/EXIO1 脉冲（注释"复位 LCD 与 TouchPad"），
+        且 QSPI_PIN_NUM_LCD_RST=GPIO_NUM_NC（无 GPIO 复位）。本板 HW V2 文档记 LCD RST 在 EXIO2。
+        为覆盖所有版本，对 EXIO0/EXIO1/EXIO2 三路都发 低10ms→高50ms 脉冲。
+        """
         self._wr(REG_CFG, b'\x00')     # 0x00 = 全部输出
-        self._out = out & 0xFF
-        self._wr(REG_OUT, bytes([self._out]))
+        self._out = 0xFF
+        self._wr(REG_OUT, bytes([self._out]))   # 先全部拉高（释放）
+        # 复位脉冲（低有效）：EXIO0/EXIO1（原厂）与 EXIO2（HW V2 文档）都脉冲，覆盖所有版本
+        mask = (1 << 0) | (1 << 1) | (1 << 2)   # EXIO0, EXIO1, EXIO2 (0-indexed)
+        self._out = 0xFF & ~mask
+        self._wr(REG_OUT, bytes([self._out]))   # 这三路拉低
+        time.sleep_ms(10)
+        self._out = 0xFF
+        self._wr(REG_OUT, bytes([self._out]))   # 全部释放
+        time.sleep_ms(50)
 
     def set_pin(self, pin, level):
         """pin: 1..8（对应 EXIO_PIN1..PIN8）；level: 0/1。不影响其它脚。"""
