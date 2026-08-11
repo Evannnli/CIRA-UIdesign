@@ -38,15 +38,12 @@
 
 #include "st77916_init_data.h"
 
-/* ---- QSPI(原生 QPI) 32 位命令封装 ----
- * 板子 ST77916 走 QSPI：dc_gpio_num=-1 + quad_mode + lcd_cmd_bits=32。
- * 每条命令是 32 位：高字节=QPI 操作码(0x02 写寄存器 / 0x32 写显存)，
- * 次高字节=LCD 命令字节，参数走独立 data 阶段（不塞进命令字）。
- * 参考 ESP32_Display_Panel/esp_lcd_st77916.c 的 tx_param/tx_color。
- * 之前用 lcd_cmd_bits=8 直发 0x11/0x2C 是普通 SPI 命令，QPI 面板不认
- * → 整条初始化(SLPOUT/DISPON/COLMOD)全失效 → 整屏黑。这就是黑屏根因。 */
-#define QPI_CMD(cmd)   ((int)(((uint32_t)0x02 << 24) | (((uint32_t)(cmd) & 0xFFU) << 8)))
-#define QPI_COLOR(cmd) ((int)(((uint32_t)0x32 << 24) | (((uint32_t)(cmd) & 0xFFU) << 8)))
+/* ---- SPI 命令封装 ----
+ * ESP-IDF 的 quad_mode 只让数据走 4 线（SPI_TRANS_MODE_QIO），
+ * 命令仍然走单线 SPI。所以直接用 8 位标准命令格式。
+ * lcd_cmd_bits=8，面板在 SPI 模式能正确解析。 */
+#define QPI_CMD(cmd)   ((int)(cmd))
+#define QPI_COLOR(cmd) ((int)(cmd))
 
 /* ---- 全局状态 ---- */
 static esp_lcd_panel_io_handle_t g_io = NULL;
@@ -182,12 +179,19 @@ static mp_obj_t st77916_make_new(const mp_obj_type_t *type, size_t n_args, size_
             .trans_queue_depth = 1,  /* 串行、同步完成，避免 360 次快速 blit 后 QSPI 异步队列卡死→中断看门狗重启 */
             .on_color_trans_done = cira_dma_done_cb,  /* DMA 完成→给信号量，blit/fill 据此同步等待 */
             .user_ctx = NULL,
-            .lcd_cmd_bits = 32,   // ST77916 QSPI 原生 QPI：命令为 32 位(0x02/0x32 操作码 + LCD 命令字节)，见 QPI_CMD/QPI_COLOR
+            .lcd_cmd_bits = 8,    // 标准 SPI 命令 8 位
             .lcd_param_bits = 8,
-            .flags = { .quad_mode = true },
+            .flags = { .quad_mode = false },  // 先用标准 SPI 模式测试
         };
         ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)SPI2_HOST,
                                                   &io_config, &g_io));
+
+        /* 软件复位（标准 ST77916 流程；原厂 esp_lcd_st77916 组件内置 init 也先发 0x01）。
+           面板上电后须先 SW 复位到干净态，否则后续解锁/SLPOUT 命令被忽略 → 屏不退出睡眠 → 全黑。
+           QSPI_PIN_NUM_LCD_RST=-1（GPIO_NUM_NC），原厂无 GPIO 复位，复位完全靠 TCA9554 EXIO 脉冲 +
+           此 SW 复位命令双保险。 */
+        init_check(esp_lcd_panel_io_tx_param(g_io, QPI_CMD(0x01), NULL, 0), 0x01);
+        vTaskDelay(120 / portTICK_PERIOD_MS);
 
         /* 发送初始化序列（软检查：单条失败仅打印，不 hard-abort） */
         for (int i = 0; i < ST77916_INIT_N; i++) {
@@ -208,6 +212,10 @@ static mp_obj_t st77916_make_new(const mp_obj_type_t *type, size_t n_args, size_
         /* DISPON 后留一点稳定时间（部分面板需要） */
         vTaskDelay(50 / portTICK_PERIOD_MS);
 
+        /* 颜色格式 RGB565（原厂 esp_lcd_st77916 组件在 vendor init 之后发 COLMOD）。
+           本 vendor 表不发 0x3A，故此处单独发，确保面板收 RGB565 像素。 */
+        uint8_t colmod[1] = { 0x55 };
+        init_check(esp_lcd_panel_io_tx_param(g_io, QPI_CMD(0x3A), colmod, 1), 0x3A);
         /* 方向 (MADCTL) + 反色 (INVON/INVOFF) */
         uint8_t mc[1] = { (uint8_t)madctl };
         init_check(esp_lcd_panel_io_tx_param(g_io, QPI_CMD(0x36), mc, 1), 0x36);
