@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CIRA 表情系统 v3 · 矢量小恶魔</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  background: #eceff1;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", sans-serif;
+  color: #1a1a1a;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 32px 16px;
+}
+header { text-align:center; margin-bottom:24px; }
+header h1 { font-size:22px; font-weight:600; letter-spacing:0.04em; }
+header p { font-size:13px; color:#7a8a93; margin-top:4px; }
+
+.stage {
+  width:360px; height:360px; border-radius:50%;
+  background:#ffffff;
+  box-shadow: 0 6px 24px rgba(40,60,70,0.18), inset 0 0 0 7px #fff, inset 0 0 0 9px #d6dde1;
+  overflow:hidden; position:relative;
+}
+canvas { display:block; width:100%; height:100%; }
+
+.controls { margin-top:24px; display:grid; grid-template-columns:repeat(4,1fr); gap:8px; width:360px; }
+.controls button {
+  background:#fff; border:2px solid #1a1a1a; border-radius:999px;
+  padding:10px 12px; font-size:14px; font-weight:500; cursor:pointer;
+  font-family:inherit; color:#1a1a1a; transition:transform .15s, background .15s;
+}
+.controls button:hover { background:#e8eef2; transform:translateY(-2px); }
+.controls button.active { background:#1a1a1a; color:#fff; }
+
+footer { margin-top:24px; font-size:11px; color:#9aa7ad; text-align:center; max-width:360px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>CIRA 表情系统 · v3</h1>
+  <p>矢量小恶魔 · 纯黑白 · 仅眉眼</p>
+</header>
+
+<div class="stage">
+  <canvas id="face" width="360" height="360"></canvas>
+</div>
+
+<div class="controls">
+  <button data-emo="neutral">平静</button>
+  <button data-emo="smug">得意</button>
+  <button data-emo="angry">凶</button>
+  <button data-emo="curious">好奇</button>
+  <button data-emo="sleepy">困</button>
+  <button data-emo="shocked">惊</button>
+  <button data-emo="happy">开心</button>
+  <button data-emo="suspicious">怀疑</button>
+</div>
+
+<footer>点击 / 数字键 1-8 切换 · 鼠标移动眼睛会看向你</footer>
+
+<script>
+/* ============================================================
+ *  表情系统 v3 · 矢量小恶魔
+ *  ─────────────────────────────────────────────────────────
+ *  设计约束（用户明确）：
+ *  · 矢量风格：纯几何、锐利边、对称、无手绘抖动、无渐变
+ *  · 小恶魔身份：头顶两只尖角（静态标识）
+ *  · 去掉嘴巴、去掉粉红
+ *  · 表情完全靠「眼睛 + 眉毛」表达
+ *  · 颜色只有黑(#161616) / 白(#fff) / 浅灰底
+ *
+ *  实现：眼形 & 眉形全部参数化 → 状态切换用 lerp 平滑过渡
+ * ============================================================ */
+
+const canvas = document.getElementById('face');
+const ctx = canvas.getContext('2d');
+const W = 360, H = 360, CX = W/2, CY = H/2;
+
+const lerp = (a,b,t)=>a+(b-a)*t;
+const clamp = (v,lo,hi)=>Math.max(lo,Math.min(hi,v));
+
+/* ─── 表情预设：全部数值，便于 lerp ───
+ *  eyeW      眼半宽(px)
+ *  eyeDyIn   内角下垂量(正=内角更低)
+ *  eyeDyOut  外角上扬量(正=外角更高→上扬尖眼)
+ *  eyeHTop   上弧高度(大=圆润)
+ *  eyeHBot   下弧高度(负=下缘变直→笑眼)
+ *  pupilX/Y  高光(眼内白点)偏移
+ *  pupilScale 高光大小
+ *  browLift  眉整体升降(负=上扬挑, 正=下压凶)
+ *  browTilt  眉内外倾角(正=外高内低挑, 负=内高外低压)
+ *  browAsym  右眉额外上扬(正=单眉挑)
+ */
+const PRESETS = {
+  neutral: {
+    eyeW:42, eyeDyIn:6,  eyeDyOut:16, eyeHTop:32, eyeHBot:26,
+    pupilX:-10, pupilY:-8, pupilScale:1.0,
+    browLift:3, browTilt:0.12, browAsym:0, blinkRate:4500,
+  },
+  smug: {
+    eyeW:40, eyeDyIn:8,  eyeDyOut:14, eyeHTop:20, eyeHBot:14,
+    pupilX:-8, pupilY:-4, pupilScale:0.85,
+    browLift:14, browTilt:0.30, browAsym:1, blinkRate:5200,
+  },
+  angry: {
+    eyeW:45, eyeDyIn:2,  eyeDyOut:24, eyeHTop:36, eyeHBot:30,
+    pupilX:0,  pupilY:-2, pupilScale:0.7,
+    browLift:22, browTilt:-0.45, browAsym:0, blinkRate:2200,
+  },
+  curious: {
+    eyeW:47, eyeDyIn:0,  eyeDyOut:4,  eyeHTop:45, eyeHBot:45,
+    pupilX:14, pupilY:-6, pupilScale:0.95,
+    browLift:-6, browTilt:0.20, browAsym:0, blinkRate:5000,
+  },
+  sleepy: {
+    eyeW:40, eyeDyIn:10, eyeDyOut:12, eyeHTop:12, eyeHBot:3,
+    pupilX:-4, pupilY:2, pupilScale:0.5,
+    browLift:9, browTilt:0.05, browAsym:0, blinkRate:2000,
+  },
+  shocked: {
+    eyeW:51, eyeDyIn:-2, eyeDyOut:2,  eyeHTop:51, eyeHBot:51,
+    pupilX:0,  pupilY:0, pupilScale:1.35,
+    browLift:-24, browTilt:0, browAsym:0, blinkRate:7200,
+  },
+  happy: {
+    eyeW:42, eyeDyIn:8,  eyeDyOut:18, eyeHTop:30, eyeHBot:-4,
+    pupilX:-8, pupilY:-10, pupilScale:0.7,
+    browLift:-5, browTilt:0.16, browAsym:0, blinkRate:4500,
+  },
+  suspicious: {
+    eyeW:38, eyeDyIn:4,  eyeDyOut:10, eyeHTop:8,  eyeHBot:3,
+    pupilX:0,  pupilY:0, pupilScale:0.6,
+    browLift:16, browTilt:-0.32, browAsym:0, blinkRate:3500,
+  },
+};
+
+let current = { ...PRESETS.neutral };
+let target  = { ...PRESETS.neutral };
+
+/* 视线（鼠标） */
+let mouseX = CX, mouseY = CY;
+canvas.addEventListener('mousemove', e => {
+  const r = canvas.getBoundingClientRect();
+  mouseX = (e.clientX - r.left) * (W/r.width);
+  mouseY = (e.clientY - r.top) * (H/r.height);
+});
+canvas.addEventListener('mouseleave', () => { mouseX = CX; mouseY = CY; });
+
+/* 眨眼 */
+let blinkProgress = 0;
+let nextBlinkAt = performance.now() + 4000;
+function scheduleBlink(){ nextBlinkAt = performance.now() + current.blinkRate + (Math.random()-0.5)*800; }
+function updateBlink(dt){
+  const now = performance.now();
+  if (now >= nextBlinkAt){
+    blinkProgress = Math.min(1, blinkProgress + dt/0.10);
+    if (blinkProgress >= 1) scheduleBlink();
+  } else if (blinkProgress > 0){
+    blinkProgress = Math.max(0, blinkProgress - dt/0.13);
+  }
+}
+
+function setEmo(name){
+  const p = PRESETS[name]; if(!p) return;
+  target = { ...p };
+  document.querySelectorAll('.controls button').forEach(b=>b.classList.toggle('active', b.dataset.emo===name));
+  scheduleBlink();
+}
+document.querySelectorAll('.controls button').forEach(b=>b.addEventListener('click', ()=>setEmo(b.dataset.emo)));
+document.addEventListener('keydown', e=>{
+  const map=['neutral','smug','angry','curious','sleepy','shocked','happy','suspicious'];
+  const i = parseInt(e.key,10)-1;
+  if(i>=0 && i<map.length) setEmo(map[i]);
+});
+document.querySelector('.controls button[data-emo="neutral"]').classList.add('active');
+
+/* ============================================================
+ *  绘制
+ * ============================================================ */
+const INK = '#161616';
+
+/* 小恶魔角（静态标识，不参与表情） */
+function drawHorns(){
+  ctx.fillStyle = INK;
+  // 左角：底边宽，顶尖
+  ctx.beginPath();
+  ctx.moveTo(CX-78, 58);
+  ctx.lineTo(CX-44, 60);
+  ctx.lineTo(CX-64, 14);
+  ctx.closePath();
+  ctx.fill();
+  // 右角镜像
+  ctx.beginPath();
+  ctx.moveTo(CX+78, 58);
+  ctx.lineTo(CX+44, 60);
+  ctx.lineTo(CX+64, 14);
+  ctx.closePath();
+  ctx.fill();
+  // 极简白高光（矢量切面感）
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.moveTo(CX-64, 18);
+  ctx.lineTo(CX-58, 30);
+  ctx.lineTo(CX-64, 30);
+  ctx.closePath();
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(CX+64, 18);
+  ctx.lineTo(CX+58, 30);
+  ctx.lineTo(CX+64, 30);
+  ctx.closePath();
+  ctx.fill();
+}
+
+/* 眼睛：参数化尖眼（上扬杏仁 / 圆 / 半闭 / 笑弧 / 眯线） */
+function drawEye(cx, cy, side){
+  const s = current;
+  const w = s.eyeW;
+  // 眨眼：压扁高度
+  const openK = lerp(1, 0.06, blinkProgress);
+  const dyIn  = s.eyeDyIn  * openK;
+  const dyOut = s.eyeDyOut * openK;
+  const hTop  = s.eyeHTop  * openK;
+  const hBot  = s.eyeHBot  * openK;
+
+  const inX  = cx - side * w,        inY  = cy + dyIn;
+  const outX = cx + side * w * 1.04, outY = cy - dyOut;   // 外角上扬尖
+  const topCx = cx, topCy = cy - hTop;
+  const botCx = cx, botCy = cy + hBot;
+
+  // 眼形填充（黑）
+  ctx.beginPath();
+  ctx.moveTo(inX, inY);
+  ctx.quadraticCurveTo(topCx, topCy, outX, outY);   // 上缘
+  ctx.quadraticCurveTo(botCx, botCy, inX, inY);     // 下缘
+  ctx.closePath();
+  ctx.fillStyle = INK;
+  ctx.fill();
+
+  // 高光（白点，随视线/情绪移动）
+  // 视线偏移：限制在眼内
+  const lookX = clamp((mouseX - cx) / 60, -1, 1) * w * 0.4;
+  const lookY = clamp((mouseY - cy) / 60, -1, 1) * (hTop + hBot) * 0.25;
+  const hx = cx + s.pupilX * 0.4 + lookX;
+  const hy = cy - (hTop) * 0.35 + s.pupilY + lookY;
+  const hr = clamp(7 * s.pupilScale, 2, 12);
+  ctx.beginPath();
+  ctx.arc(hx, hy, hr, 0, Math.PI*2);
+  ctx.fillStyle = '#fff';
+  ctx.fill();
+  // 次高光（小）
+  ctx.beginPath();
+  ctx.arc(hx + hr*0.5, hy + hr*0.4, hr*0.35, 0, Math.PI*2);
+  ctx.fillStyle = '#fff';
+  ctx.fill();
+}
+
+/* 眉毛：锋利尖三角（矢量感） */
+function drawBrow(cx, cy, side){
+  const s = current;
+  const lift = s.browLift;            // 负=上扬
+  const tilt = s.browTilt;            // 正=外高内低(挑)
+  const asym = s.browAsym;            // 右眉额外挑
+  // 右眉(side=+1)额外上扬
+  const extra = (side > 0) ? asym * 22 : 0;
+
+  const innerX = cx - side * 66;
+  const outerX = cx - side * 4;       // 内角靠近鼻梁
+  const innerY = cy + lift + extra*0;  // 内端
+  const outerY = cy + lift - extra - tilt * 30;  // 外端(挑/压)
+
+  // 尖三角眉：内端方、外端尖
+  ctx.beginPath();
+  ctx.moveTo(innerX, innerY - 6);
+  ctx.lineTo(innerX, innerY + 6);
+  ctx.lineTo(outerX, outerY);
+  ctx.closePath();
+  ctx.fillStyle = INK;
+  ctx.fill();
+}
+
+/* ============================================================
+ *  主循环
+ * ============================================================ */
+let lastTime = performance.now();
+function tick(now){
+  const dt = Math.min(0.05, (now - lastTime)/1000);
+  lastTime = now;
+
+  // 状态过渡（dt 无关 lerp）
+  const k = 1 - Math.pow(0.0015, dt);
+  for (const key in target){
+    if (typeof target[key] === 'number') current[key] = lerp(current[key], target[key], k);
+  }
+
+  updateBlink(dt);
+
+  // 清屏
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0,0,W,H);
+
+  // 角（静态）
+  drawHorns();
+
+  // 布局
+  const eyeY = CY - 5;
+  const eyeXOff = 86;
+  const browY = CY - 58;
+
+  // 眉
+  drawBrow(CX - eyeXOff, browY, -1);
+  drawBrow(CX + eyeXOff, browY, +1);
+
+  // 眼
+  drawEye(CX - eyeXOff, eyeY, -1);
+  drawEye(CX + eyeXOff, eyeY, +1);
+
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>
