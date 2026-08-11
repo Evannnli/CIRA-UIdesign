@@ -38,6 +38,16 @@
 
 #include "st77916_init_data.h"
 
+/* ---- QSPI(原生 QPI) 32 位命令封装 ----
+ * 板子 ST77916 走 QSPI：dc_gpio_num=-1 + quad_mode + lcd_cmd_bits=32。
+ * 每条命令是 32 位：高字节=QPI 操作码(0x02 写寄存器 / 0x32 写显存)，
+ * 次高字节=LCD 命令字节，参数走独立 data 阶段（不塞进命令字）。
+ * 参考 ESP32_Display_Panel/esp_lcd_st77916.c 的 tx_param/tx_color。
+ * 之前用 lcd_cmd_bits=8 直发 0x11/0x2C 是普通 SPI 命令，QPI 面板不认
+ * → 整条初始化(SLPOUT/DISPON/COLMOD)全失效 → 整屏黑。这就是黑屏根因。 */
+#define QPI_CMD(cmd)   ((int)(((uint32_t)0x02 << 24) | (((uint32_t)(cmd) & 0xFFU) << 8)))
+#define QPI_COLOR(cmd) ((int)(((uint32_t)0x32 << 24) | (((uint32_t)(cmd) & 0xFFU) << 8)))
+
 /* ---- 全局状态 ---- */
 static esp_lcd_panel_io_handle_t g_io = NULL;
 static bool g_bl_inited = false;
@@ -86,8 +96,8 @@ static void send_window(int x, int y, int w, int h) {
         (uint8_t)((y >> 8) & 0xFF), (uint8_t)(y & 0xFF),
         (uint8_t)(((y + h - 1) >> 8) & 0xFF), (uint8_t)((y + h - 1) & 0xFF),
     };
-    esp_lcd_panel_io_tx_param(g_io, 0x2A, col, 4);   // CASET
-    esp_lcd_panel_io_tx_param(g_io, 0x2B, row, 4);   // RASET
+    esp_lcd_panel_io_tx_param(g_io, QPI_CMD(0x2A), col, 4);   // CASET
+    esp_lcd_panel_io_tx_param(g_io, QPI_CMD(0x2B), row, 4);   // RASET
 }
 
 /* 把缓冲拷到 DMA 可达的内部 SRAM 再发 RAMWR，并等 DMA 真正完成才返回。
@@ -99,13 +109,13 @@ static void blit_dma_safe(const uint8_t *src, size_t size) {
     uint8_t *dma = heap_caps_malloc(size, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
     if (dma == NULL) {
         /* 极端内存不足：退回直发（仍走同步等待，避免释放/覆盖竞态） */
-        esp_lcd_panel_io_tx_color(g_io, 0x2C, src, size);
+        esp_lcd_panel_io_tx_color(g_io, QPI_COLOR(0x2C), src, size);
         wait_dma_done();
         return;
     }
     memcpy(dma, src, size);
     esp_cache_msync(dma, size, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-    esp_lcd_panel_io_tx_color(g_io, 0x2C, dma, size);
+    esp_lcd_panel_io_tx_color(g_io, QPI_COLOR(0x2C), dma, size);
     wait_dma_done();
     heap_caps_free(dma);
 }
@@ -172,7 +182,7 @@ static mp_obj_t st77916_make_new(const mp_obj_type_t *type, size_t n_args, size_
             .trans_queue_depth = 1,  /* 串行、同步完成，避免 360 次快速 blit 后 QSPI 异步队列卡死→中断看门狗重启 */
             .on_color_trans_done = cira_dma_done_cb,  /* DMA 完成→给信号量，blit/fill 据此同步等待 */
             .user_ctx = NULL,
-            .lcd_cmd_bits = 8,    // ST77916 QSPI 命令为 1 字节（曾误写 32 → 每条命令都错）
+            .lcd_cmd_bits = 32,   // ST77916 QSPI 原生 QPI：命令为 32 位(0x02/0x32 操作码 + LCD 命令字节)，见 QPI_CMD/QPI_COLOR
             .lcd_param_bits = 8,
             .flags = { .quad_mode = true },
         };
@@ -187,9 +197,9 @@ static mp_obj_t st77916_make_new(const mp_obj_type_t *type, size_t n_args, size_
             uint8_t delay = row[2];
             const uint8_t *data = &row[3];
             if (len > 0) {
-                init_check(esp_lcd_panel_io_tx_param(g_io, cmd, data, len), cmd);
+                init_check(esp_lcd_panel_io_tx_param(g_io, QPI_CMD(cmd), data, len), cmd);
             } else {
-                init_check(esp_lcd_panel_io_tx_param(g_io, cmd, NULL, 0), cmd);
+                init_check(esp_lcd_panel_io_tx_param(g_io, QPI_CMD(cmd), NULL, 0), cmd);
             }
             if (delay > 0) {
                 vTaskDelay(delay / portTICK_PERIOD_MS);
@@ -200,8 +210,8 @@ static mp_obj_t st77916_make_new(const mp_obj_type_t *type, size_t n_args, size_
 
         /* 方向 (MADCTL) + 反色 (INVON/INVOFF) */
         uint8_t mc[1] = { (uint8_t)madctl };
-        init_check(esp_lcd_panel_io_tx_param(g_io, 0x36, mc, 1), 0x36);
-        init_check(esp_lcd_panel_io_tx_param(g_io, invert ? 0x21 : 0x20, NULL, 0),
+        init_check(esp_lcd_panel_io_tx_param(g_io, QPI_CMD(0x36), mc, 1), 0x36);
+        init_check(esp_lcd_panel_io_tx_param(g_io, invert ? QPI_CMD(0x21) : QPI_CMD(0x20), NULL, 0),
                    invert ? 0x21 : 0x20);
 
         /* 背光 LEDC */
@@ -294,7 +304,7 @@ static mp_obj_t st77916_fill(size_t n_args, const mp_obj_t *args) {
        每行发完必须等 DMA 完成（wait_dma_done）再覆盖 line，否则异步 DMA 读已释放/覆盖的缓冲。 */
     for (int y = 0; y < h; y++) {
         send_window(0, y, w, 1);
-        esp_lcd_panel_io_tx_color(g_io, 0x2C, line, (size_t)(w * 2));
+        esp_lcd_panel_io_tx_color(g_io, QPI_COLOR(0x2C), line, (size_t)(w * 2));
         wait_dma_done();
     }
     free(line);
@@ -304,7 +314,7 @@ static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(st77916_fill_obj, 2, 2, st77916_fill)
 
 /* ---- on() / off()：显示开关 + 背光 ---- */
 static mp_obj_t st77916_on(mp_obj_t self_in) {
-    if (g_io) ESP_ERROR_CHECK(esp_lcd_panel_io_tx_param(g_io, 0x29, NULL, 0));  // DISPON
+    if (g_io) ESP_ERROR_CHECK(esp_lcd_panel_io_tx_param(g_io, QPI_CMD(0x29), NULL, 0));  // DISPON
     if (g_bl_inited) {
         ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 200);
         ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
@@ -314,7 +324,7 @@ static mp_obj_t st77916_on(mp_obj_t self_in) {
 static MP_DEFINE_CONST_FUN_OBJ_1(st77916_on_obj, st77916_on);
 
 static mp_obj_t st77916_off(mp_obj_t self_in) {
-    if (g_io) ESP_ERROR_CHECK(esp_lcd_panel_io_tx_param(g_io, 0x28, NULL, 0));  // DISPOFF
+    if (g_io) ESP_ERROR_CHECK(esp_lcd_panel_io_tx_param(g_io, QPI_CMD(0x28), NULL, 0));  // DISPOFF
     if (g_bl_inited) {
         ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
         ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);

@@ -1,0 +1,4 @@
+--flash_mode dio --flash_freq 80m --flash_size 8MB
+0x0 cira-lvgl-bootloader-2026-08-11c.bin
+0x8000 cira-lvgl-partition-table-2026-08-11c.bin
+0x10000 cira-lvgl-firmware-2026-08-11c.bin

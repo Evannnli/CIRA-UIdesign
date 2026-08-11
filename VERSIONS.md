@@ -31,7 +31,8 @@ Device Runtime 的星云数学、控制中心布局都从这里对齐。
 |------|------|------|----------|------|------|
 | v0.8.7 | 2026-04-06 出厂 | 原厂 Xiaozhi 固件（非 CIRA 自研） | 原厂 `main.py` | 基线/回退点 | 整片备份在 `~/xiaozhi_backup.bin`（16MB，**本地不入库**） |
 | 路线 A · LVGL（初版） | 2026-08-11 | `device-builds/cira-lvgl-firmware-2026-08-11.bin` | `:main.py` = `micropython/cira_splash.py` | 已烧录+探针全绿+开机 splash | lv_micropython + 自建 ST77916 QSPI C 驱动；**已知 DMA 异步早释放崩板（已修于 build4）** |
-| **路线 A · LVGL（build4·当前）** | **2026-08-11** | `device-builds/cira-lvgl-firmware-2026-08-11b.bin` | `:main.py` = `micropython/cira_splash.py` | **当前实机版本·稳定不崩** | 修 DMA 异步事务+过早释放/覆盖源缓冲→堆损坏静默重启；探针 `tools/minlvgl.py` A→N 全绿 + DONE |
+| **路线 A · LVGL（build4·当前）** | **2026-08-11** | `device-builds/cira-lvgl-firmware-2026-08-11b.bin` | `:main.py` = `micropython/cira_splash.py` | **上一已验证实机版本·稳定不崩** | 修 DMA 异步事务+过早释放/覆盖源缓冲→堆损坏静默重启；探针 `tools/minlvgl.py` A→N 全绿 + DONE |
+| 路线 A · LVGL（build6·修正构建命令） | 2026-08-11 | `device-builds/cira-lvgl-firmware-2026-08-11c.bin` | `:main.py` = `micropython/cira_splash.py` | 已构建+归档，**待无按键烧录+四色验证** | 同 build4 的 DMA 修复 st77916；**构建命令修正**：`idf.py -DUSER_C_MODULES=<.../micropython.cmake>` 显式传入（build5 误用 env 变量→`st77916.c` 漏编→黑屏，已定位根因）。本地 `tools/qpi_sim.py` 离线验证 QPI 命令流与 ST77916 QSPI 规范一致 |
 
 ### 装机版本管理约定
 - 每次重新编译/重烧，都在 `device-builds/` 加一组带日期的 `.bin`，并在本表加一行。

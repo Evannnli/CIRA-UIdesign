@@ -34,6 +34,28 @@ esptool.py --chip esp32s3 -p /dev/cu.usbmodem101 -b 460800 \
   0x10000 device-builds/cira-lvgl-firmware-2026-08-11b.bin
 ```
 
+### 路线 A · LVGL 固件（build6 = 修正构建命令版，2026-08-11，待烧录验证）
+
+build6 与 build4 固件**功能等价**（同样的 DMA 修复 ST77916），区别仅在**构建命令修正**：
+build5 曾用 `idf.py` 直编 + env 变量传 `USER_C_MODULES`（env 变量进不了 CMake）→ `st77916.c`
+漏编 → 黑屏；build6 改用 `idf.py -DUSER_C_MODULES=<.../micropython.cmake>` 显式传入，已确认驱动
+编进固件（`st77916_blit_obj` / `st77916_fill_obj` 进 `micropython.elf`）。本地 `tools/qpi_sim.py`
+离线验证 QPI 命令流与 ST77916 QSPI 规范一致。
+
+```bash
+# build6 烧录（推荐，待硬件验证）
+esptool.py --chip esp32s3 -p /dev/cu.usbmodem101 -b 460800 \
+  --before default_reset --after hard_reset write_flash @device-builds/flash_args-2026-08-11c.txt
+# 或显式三件套
+esptool.py --chip esp32s3 -p /dev/cu.usbmodem101 -b 460800 \
+  --before default_reset --after hard_reset write_flash --flash_mode dio --flash_freq 80m --flash_size 8MB \
+  0x0     device-builds/cira-lvgl-bootloader-2026-08-11c.bin \
+  0x8000  device-builds/cira-lvgl-partition-table-2026-08-11c.bin \
+  0x10000 device-builds/cira-lvgl-firmware-2026-08-11c.bin
+```
+
+> 一键脚本见 `/tmp/flash_and_verify.sh`（烧录 + 软复位 + 推送运行时源码 + 四色验证）。
+
 > ⚠️ 烧录前务必先整片备份原厂固件（见 `PROJECT_CONTEXT.md` 备份段），否则无法回退。
 > 烧录后首次启动若卡 `fs_corrupted`，进下载模式 `erase_region 0x310000 0x4F0000` 重建文件系统。
 
