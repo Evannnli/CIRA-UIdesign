@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CIRA 表情 v4 · 锐利+天真参考图复刻</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  background: #eceff1;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", sans-serif;
+  color: #1a1a1a;
+  min-height: 100vh;
+  display: flex; flex-direction: column;
+  align-items: center;
+  padding: 32px 16px;
+}
+header { text-align:center; margin-bottom:24px; }
+header h1 { font-size:22px; font-weight:600; }
+header p { font-size:13px; color:#7a8a93; margin-top:4px; }
+
+.stage {
+  width:360px; height:360px; border-radius:50%;
+  background:#ffffff;
+  box-shadow: 0 6px 24px rgba(40,60,70,0.18), inset 0 0 0 7px #fff, inset 0 0 0 9px #d6dde1;
+  overflow:hidden; position:relative;
+}
+canvas { display:block; width:100%; height:100%; }
+
+.controls { margin-top:24px; display:flex; gap:10px; justify-content:center; }
+.controls button {
+  background:#fff; border:2px solid #1a1a1a; border-radius:999px;
+  padding:12px 24px; font-size:15px; font-weight:600; cursor:pointer;
+  font-family:inherit; color:#1a1a1a;
+  transition: transform .15s, background .15s;
+}
+.controls button:hover { transform:translateY(-2px); }
+.controls button.active { background:#1a1a1a; color:#fff; }
+
+footer { margin-top:18px; font-size:11px; color:#9aa7ad; text-align:center; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>CIRA 表情 · v4</h1>
+  <p>锐利 & 天真 · 参考图复刻 · 自动眨眼</p>
+</header>
+
+<div class="stage">
+  <canvas id="face" width="360" height="360"></canvas>
+</div>
+
+<div class="controls">
+  <button data-emo="sharp">锐利 / 凶</button>
+  <button data-emo="innocent">天真 / 呆</button>
+</div>
+
+<footer>数字键 1 / 2 切换 · 鼠标移动眼睛看向你</footer>
+
+<script>
+/* ============================================================
+ *  表情 v4 · 复刻两张参考图
+ *  ─────────────────────────────────────────────────────────
+ *  锐利（sharp）:
+ *    · 粗黑半月眉盖在眼上方（内角低、外角高高扬起）
+ *    · 内眼角有锐利短挑
+ *    · 蓝白色椭圆眼眶 + 大黑虹膜
+ *    · 眉上两根小斜皱眉线
+ *
+ *  天真（innocent）:
+ *    · 鼓鼓的粗黑眉弧覆盖眼睛上半部分（内外齐平）
+ *    · 白色眼眶 + 右下角小黑圆瞳孔
+ *    · 眼底细弧下眼睑
+ *    · 颧骨两侧三道红色笔触
+ *
+ *  眨眼：
+ *    · 上眼睑弧下沉，眼眶缩小
+ *    · 锐利：闭眼时变成一条横向粗黑线
+ *    · 天真：闭眼时变成一条弯弯的粗弧
+ * ============================================================ */
+
+const canvas = document.getElementById('face');
+const ctx = canvas.getContext('2d');
+const W = 360, H = 360, CX = W/2, CY = H/2;
+
+const INK = '#1a1a1a';
+const lerp = (a,b,t) => a+(b-a)*t;
+const clamp = (v,lo,hi)=>Math.max(lo,Math.min(hi,v));
+
+/* 状态：两套形状独立 + 淡入淡出过渡（不是几何插值，避免怪异中间态） */
+let prevShape = 'sharp';
+let curShape  = 'sharp';
+let blendT    = 1;     // 0=完全显示 prev, 1=完全显示 cur
+
+/* 眨眼（两套形状都用同一个 progress） */
+let blinkProgress = 0;
+let nextBlinkAt = performance.now() + 3000;
+function scheduleBlink(){
+  nextBlinkAt = performance.now() + 3500 + (Math.random()-0.5)*1200;
+}
+function updateBlink(dt){
+  const now = performance.now();
+  if (now >= nextBlinkAt){
+    blinkProgress = Math.min(1, blinkProgress + dt/0.11);  // 闭 110ms
+    if (blinkProgress >= 1) scheduleBlink();
+  } else if (blinkProgress > 0){
+    blinkProgress = Math.max(0, blinkProgress - dt/0.13);  // 张 130ms
+  }
+}
+
+/* 鼠标视线 — 投影到每个眼里影响瞳孔位置 */
+let mouseX = CX, mouseY = CY;
+canvas.addEventListener('mousemove', e => {
+  const r = canvas.getBoundingClientRect();
+  mouseX = (e.clientX - r.left) * (W/r.width);
+  mouseY = (e.clientY - r.top) * (H/r.height);
+});
+canvas.addEventListener('mouseleave', () => { mouseX = CX; mouseY = CY; });
+
+/* 切换 */
+function setEmo(name){
+  if (name === curShape) return;
+  prevShape = curShape;
+  curShape = name;
+  blendT = 0;
+  // 高亮按钮
+  document.querySelectorAll('.controls button').forEach(b=>{
+    b.classList.toggle('active', b.dataset.emo === name);
+  });
+}
+document.querySelectorAll('.controls button').forEach(b=>{
+  b.addEventListener('click', () => setEmo(b.dataset.emo));
+});
+document.addEventListener('keydown', e=>{
+  if (e.key === '1') setEmo('sharp');
+  if (e.key === '2') setEmo('innocent');
+});
+document.querySelector('.controls button[data-emo="sharp"]').classList.add('active');
+
+/* ============================================================
+ *  锐利眼（左/右通用）
+ *  ─────────────────────────────────────────────────────────
+ *  解构：上眼睑粗黑弧 + 内眼角锐利挑尖 + 蓝白椭圆眼眶 + 大黑虹膜
+ * ============================================================ */
+function drawSharpEye(cx, cy, side, alpha){
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  const open = 1 - blinkProgress;        // 0=闭 1=睁
+  const closeAmt = 1 - open;             // 0=睁 1=闭
+
+  /* 1. 蓝白椭圆眼眶（闭眼时缩小且模糊化为线） */
+  if (open > 0.05) {
+    ctx.fillStyle = '#cbe5ee';
+    ctx.beginPath();
+    ctx.ellipse(cx, cy + 12, 60, 30 * open + 1, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  /* 2. 大黑虹膜（闭眼时消失） */
+  if (open > 0.2) {
+    // 视线偏移：闭眼时锁中心
+    const lookX = clamp((mouseX - cx) / 80, -1, 1) * 12;
+    const lookY = clamp((mouseY - cy) / 80, -1, 1) * 8;
+
+    ctx.fillStyle = INK;
+    ctx.beginPath();
+    ctx.ellipse(cx + lookX, cy + 14 + lookY,
+      42 * open, 22 * open + 1, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 虹膜内一点点高光
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(cx + lookX + 10, cy + 8 + lookY, 6 * open, 0, Math.PI*2);
+    ctx.fill();
+  }
+
+  /* 3. 上眼睑主弧（粗黑，盖住眼上半） */
+  ctx.strokeStyle = INK;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  // 闭眼时整条弧往下压扁，最终变成一条水平弧线
+  const arcLift = 32 * open + 4;            // 弧顶下压幅度：open 越小 → 越小
+  const innerLift = 28 * (1 - closeAmt*0.7); // 内眼角抬起幅度
+  const outerLift = 30 * open + 2;
+
+  ctx.lineWidth = open > 0.15 ? 10 : 9;
+  ctx.beginPath();
+  // 内端（朝中间）→ 上弧 → 外端（向外高高扬起）
+  ctx.moveTo(cx + side * 34, cy - innerLift * 0.3 + (1-open) * 15);
+  ctx.quadraticCurveTo(
+    cx, cy - arcLift + (1-open) * 18,                       // 控制点
+    cx - side * 64, cy - outerLift + (1-open) * 12          // 外端
+  );
+  ctx.stroke();
+
+  /* 4. 内眼角锐利短挑尖 */
+  if (open > 0.35) {
+    ctx.lineWidth = 8;
+    ctx.beginPath();
+    ctx.moveTo(cx + side * 34, cy - innerLift * 0.3 + (1-open) * 14);
+    ctx.lineTo(cx + side * 14, cy + 6 + (1-open) * 8);
+    ctx.stroke();
+  }
+
+  /* 5. 皱眉装饰（两眉之间的两根短斜线，仅在睁眼显示） */
+  if (open > 0.4) {
+    ctx.lineWidth = 5;
+    // 左皱眉线（在中间偏左）
+    ctx.beginPath();
+    ctx.moveTo(CX - 18, CY - 70);
+    ctx.lineTo(CX - 8, CY - 60);
+    ctx.stroke();
+    // 右皱眉线
+    ctx.beginPath();
+    ctx.moveTo(CX + 8, CY - 60);
+    ctx.lineTo(CX + 18, CY - 70);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+/* ============================================================
+ *  天真眼
+ *  ─────────────────────────────────────────────────────────
+ *  解构：粗黑鼓弧眉盖 + 白色椭圆眼眶 + 右下角小黑瞳孔
+ *        + 眼底细弧下眼睑 + 颧骨三道红笔触
+ * ============================================================ */
+function drawInnocentEye(cx, cy, side, alpha){
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  const open = 1 - blinkProgress;
+  const closeAmt = 1 - open;
+
+  /* 1. 白色眼眶（闭眼时缩小） */
+  if (open > 0.05) {
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.ellipse(cx, cy + 8, 60, 32 * open + 1, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  /* 2. 小黑圆瞳孔（偏右下方，跟随鼠标） */
+  if (open > 0.35) {
+    const lookX = clamp((mouseX - cx) / 80, -1, 1) * 8;
+    const lookY = clamp((mouseY - cy) / 80, -1, 1) * 6;
+    ctx.fillStyle = INK;
+    ctx.beginPath();
+    ctx.arc(cx + 22 + lookX, cy + 18 + lookY, 8 * open, 0, Math.PI*2);
+    ctx.fill();
+
+    // 小高光在瞳孔内
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(cx + 24 + lookX, cy + 14 + lookY, 2.5, 0, Math.PI*2);
+    ctx.fill();
+  }
+
+  /* 3. 下眼睑弧（细线，闭眼时与上眼睑几乎贴上） */
+  if (open > 0.2) {
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(cx - 48, cy + 30 + closeAmt * 5);
+    ctx.quadraticCurveTo(cx, cy + 36 + closeAmt * 2, cx + 48, cy + 30 + closeAmt * 5);
+    ctx.stroke();
+  }
+
+  /* 4. 上眼睑鼓弧（粗黑，盖住眼上半大部分） */
+  ctx.strokeStyle = INK;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = 12;
+
+  // 闭眼时鼓弧下沉变平坦，最终变成一条弯弧
+  const lift = 48 * open + 4;
+  const yDown = (1 - open) * 18;
+
+  ctx.beginPath();
+  ctx.moveTo(cx + side * 32, cy - 16 + yDown);
+  ctx.quadraticCurveTo(
+    cx, cy - lift + yDown * 0.5,
+    cx - side * 56, cy - 16 + yDown
+  );
+  ctx.stroke();
+
+  /* 5. 闭眼时：把鼓弧下沉到与下眼睑相交，形成"闭合黑弧" */
+  if (open < 0.35) {
+    ctx.lineWidth = 11;
+    ctx.beginPath();
+    const lift2 = lerp(20, 8, 1 - open);
+    ctx.moveTo(cx - 50, cy + 8);
+    ctx.quadraticCurveTo(cx, cy + lift2, cx + 50, cy + 8);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+/* ============================================================
+ *  颧骨笔触（天真模式的脸颊红线）
+ * ============================================================ */
+function drawCheekStrokes(alpha){
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = '#e8475a';
+  ctx.lineWidth = 3;
+  ctx.lineCap = 'round';
+
+  // 左右两侧各三道短线（脸颊装饰）
+  function strokes(side){
+    const baseX = CX + side * 105;
+    const baseY = CY + 85;
+    for (let i = 0; i < 3; i++){
+      const dx = i * 10;
+      ctx.beginPath();
+      ctx.moveTo(baseX - dx, baseY - i*1);
+      ctx.lineTo(baseX - dx + 6, baseY + 10 - i*1);
+      ctx.stroke();
+    }
+  }
+  strokes(-1); strokes(+1);
+
+  // 中间下方一个小红点
+  ctx.fillStyle = '#e8475a';
+  ctx.beginPath();
+  ctx.arc(CX, CY + 105, 2, 0, Math.PI*2);
+  ctx.fill();
+
+  ctx.restore();
+}
+
+/* ============================================================
+ *  主循环：淡入淡出切换两套形状
+ * ============================================================ */
+let lastTime = performance.now();
+const eyeY = CY - 5;
+const eyeXOff = 88;
+
+function tick(now){
+  const dt = Math.min(0.05, (now - lastTime)/1000);
+  lastTime = now;
+
+  // 过渡
+  if (blendT < 1){
+    const k = 1 - Math.pow(0.001, dt);
+    blendT = Math.min(1, blendT + k * 0.6);
+    if (blendT >= 1) prevShape = curShape;
+  }
+  updateBlink(dt);
+
+  // 清屏
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, W, H);
+
+  // 先画 prev（透明度 1-blendT）→ 再画 cur（透明度 blendT）
+  const aPrev = 1 - blendT;
+  const aCur  = blendT;
+
+  // 锐利
+  if (prevShape === 'sharp' || curShape === 'sharp'){
+    const alpha = (prevShape === 'sharp' ? aPrev : 0) + (curShape === 'sharp' ? aCur : 0);
+    drawSharpEye(CX - eyeXOff, eyeY, -1, alpha);
+    drawSharpEye(CX + eyeXOff, eyeY, +1, alpha);
+  }
+  // 天真
+  if (prevShape === 'innocent' || curShape === 'innocent'){
+    const alpha = (prevShape === 'innocent' ? aPrev : 0) + (curShape === 'innocent' ? aCur : 0);
+    drawInnocentEye(CX - eyeXOff, eyeY, -1, alpha);
+    drawInnocentEye(CX + eyeXOff, eyeY, +1, alpha);
+  }
+  // 脸颊笔触（仅天真带）
+  if (curShape === 'innocent' || prevShape === 'innocent'){
+    drawCheekStrokes(aCur * (curShape==='innocent'?1:0) + aPrev * (prevShape==='innocent'?1:0));
+  }
+
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>
