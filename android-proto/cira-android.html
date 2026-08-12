@@ -137,8 +137,10 @@
   //   AUTH           —— 暂留空（对端无鉴权）
   //   TRANSCRIBE_WAV —— false=发裸 16-bit/16k/mono PCM；若对端收 wav 容器改 true
   //   USE_STREAM     —— false=非流式 /v1/respond；若对端实现 respond_stream 改 true
+  // BASE 可用 URL 参数覆盖：?bridge=/ 走同源 https 代理（手机验真语音用，见 bridge_proxy.js）
+  const _qb = new URLSearchParams(location.search).get('bridge');
   const BRIDGE = {
-    BASE: 'http://192.168.31.235:8788',
+    BASE: _qb || 'http://192.168.31.235:8788',
     AUTH: '',                 // 若桥需鉴权填 'Bearer xxxxx'，否则留空
     TIMEOUT_MS: { transcribe: 15000, respond: 12000, speak: 12000, wake: 6000, health: 4000 },
     TRANSCRIBE_WAV: false,    // true=桥收 wav 容器；false=收裸 16-bit/16k/mono PCM
@@ -320,20 +322,20 @@
     talkBtn.classList.remove('listening');
     talkBtn.innerHTML='按住<br>说话';
     lf.setAudioLevel(0.3);
-    if(state===STATE.LISTEN){
-      setState(STATE.THINK, 1000);
-      talkT1 = setTimeout(()=>{ if(state===STATE.THINK) setState(STATE.SPEAK, 1800); }, 1000);
-      talkT2 = setTimeout(()=>{ if(state===STATE.SPEAK) setState(STATE.IDLE); }, 1000+1800);
-    }
+    // 真交互：打开悬浮对话并跑一轮真实模型（http 下麦克风不可用→自动转文字输入，仍调真实模型）
+    if(!wakeActive) triggerWake();
+    runTurn();
   }
   talkBtn.addEventListener('pointerdown', e=>{e.preventDefault(); startTalk();});
   talkBtn.addEventListener('pointerup', endTalk);
   talkBtn.addEventListener('pointercancel', endTalk);
   talkBtn.addEventListener('pointerleave', e=>{ if(state===STATE.LISTEN) endTalk(); });
 
-  // ---------- 场景B 模拟唤醒 + 麦克风 VAD(能量阈值) ----------
-  // 注：此原型未接入真实模型。唤醒/回话/思考/回应均为本地模拟，
-  // 仅用麦克风音量模拟"是否有人说话"，验证"说一句才进思考、不说静静等"的流转手感。
+  // ---------- 场景B 悬浮对话：真实模型链路（唤醒→聆听→思考→回应） ----------
+  // 已接通桥接服务(http://192.168.31.235:8788)：VAD 仅用于判断"说一句才进思考、不说静静等"，
+  // 真正说话内容走 /v1/transcribe(ASR) → /v1/respond(Core) → /v1/speak(TTS)。
+  // 注：纯 http 下手机浏览器禁麦克风(getUserMedia 需安全上下文)，会自动降级为文字输入，
+  //     文字同样走真实模型；要验真语音需 HTTPS 内网穿透或 Capacitor 安全上下文。
   const wakePanel=document.getElementById('wakePanel');
   const wakeFill=document.getElementById('wakeTimerFill');
   const wakeReply=document.getElementById('wakeReply');
@@ -382,7 +384,7 @@
   }
   // 降级：局域网 http 通常不是安全上下文，getUserMedia 拿不到权限 → 用"按住说话"模拟
   function fallbackMic(){
-    usingRealMic=false; wakeMic.textContent='未授权麦克风 · 请“按住说话”';
+    usingRealMic=false; wakeMic.textContent='麦克风不可用(需HTTPS/App)· 请打字或按“按住说话”';
     wakeMore.textContent='按住说话'; wakeMore.classList.add('hold');
     if(!fallbackBound){
       fallbackBound=true;
@@ -429,7 +431,7 @@
         heardAny=true; speaking=true; silentStart=now;
         if(wakePhase==='listen') wakeStatus.textContent='我在听…';
       } else if(speaking && now-silentStart>SILENCE_MS){
-        endSentence(); return;        // 句尾→思考/回应
+        runTurn(); return;           // 句尾→思考/回应（真实模型链路）
       }
       // 进度条：有人声=涨满；静默=按剩余静默预算回落；没人开口过=按初始预算
       const budget=heardAny?SILENCE_MS:INIT_SILENCE;
@@ -438,67 +440,78 @@
       if(!heardAny && now-wakeStart>INIT_SILENCE) hideWake();
     },60);
   }
-  async function endSentence(){
+  const delay = ms => new Promise(r=>setTimeout(r, ms));
+  let turnBusy = false;
+  async function runTurn(){
+    if(turnBusy) return;                    // 防止 VAD 静默 + 按钮释放重复触发同一轮
+    turnBusy = true;
     speaking=false; wakePhase='think';
     if(wakeTick){ clearInterval(wakeTick); wakeTick=null; }
     setState(STATE.THINK); wakeStatus.textContent='思考中…';
 
+    // 1) 取用户说的话：真实麦克风 ASR，或文字降级（http 下麦克风不可用）
     let text=null;
-    if(usingRealMic){
-      if(USE_BRIDGE){                       // 真实麦克风 → ASR
-        try{
-          const pcmBlob = flushPCM();
-          const r = await bridgeFetch('/v1/transcribe', { method:'POST', body:pcmBlob,
-            headers:{'Content-Type': BRIDGE.TRANSCRIBE_WAV?'audio/wav':'application/octet-stream'},
-            timeout: BRIDGE.TIMEOUT_MS.transcribe });
-          const j = await r.json();
-          if(j && j.asr_available && j.text) text = j.text;
-        }catch(e){ console.warn('[CIRA] transcribe fail', e); }
-      }
-    } else if(USE_BRIDGE){                   // 麦克风不可用（非安全上下文）→ 文字降级
-      text = await askTextFallback();
+    if(usingRealMic && USE_BRIDGE){
+      try{
+        const pcmBlob = flushPCM();
+        const r = await bridgeFetch('/v1/transcribe', { method:'POST', body:pcmBlob,
+          headers:{'Content-Type': BRIDGE.TRANSCRIBE_WAV?'audio/wav':'application/octet-stream'},
+          timeout: BRIDGE.TIMEOUT_MS.transcribe });
+        const j = await r.json();
+        if(j && j.asr_available && j.text) text = j.text;
+      }catch(e){ console.warn('[CIRA] transcribe fail', e); }
+    } else if(USE_BRIDGE){
+      text = await askTextFallback();        // 无麦克风权限 → 文字输入（仍走真实模型）
     }
 
-    if(!USE_BRIDGE){                          // 离线占位：不联网
-      wakePhase='speak'; setState(STATE.SPEAK);
-      wakeReply.textContent=REPLY_PHRASES[Math.floor(Math.random()*REPLY_PHRASES.length)];
-      wakeStatus.textContent='回应中…(模型未接入)';
-      setTimeout(backToListen, 1800);
-      return;
+    if(!text){                              // 没拿到任何输入：不假装回复，明确告知回到聆听
+      wakeStatus.textContent='没听清，再说一次～';
+      await delay(1200); turnBusy=false; backToListen(); return;
     }
-    if(!text){ backToListen(); return; }      // 没拿到文字（ASR 空且用户取消输入）
 
-    // Core 回应：emotion/ignite 取桥的 display_state（权威），status 由 App 自管
-    let emotion='comfort', ignite=null;
-    try{
-      const r = await bridgeFetch('/v1/respond', { method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ schema:'child-input@1', text, speaker:'child', child_age:0,
-          channel:'voice', history:'', voice_meta:null, session_id:SESSION_ID }),
-        timeout: BRIDGE.TIMEOUT_MS.respond });
-      const j = await r.json();
-      const ds = j && j.display_state;
-      if(ds){ if(ds.emotion) emotion=ds.emotion; if('ignite' in ds) ignite=ds.ignite; }
-      else if(j && j.emotion) emotion=j.emotion;
-    }catch(e){ console.warn('[CIRA] respond fail', e); }
+    // 2) 回显“我听到你说：…”，证明真的听进去了（解决“不知道听没听到”）
+    wakeStatus.textContent = '我听到：「'+text+'」';
+    await delay(650);
+
+    // 3) Core 回应：emotion/ignite 取桥的 display_state（权威），status 由 App 自管
+    let emotion='comfort', ignite=null, replyText='';
+    if(USE_BRIDGE){
+      try{
+        const r = await bridgeFetch('/v1/respond', { method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ schema:'child-input@1', text, speaker:'child', child_age:0,
+            channel:'voice', history:'', voice_meta:null, session_id:SESSION_ID }),
+          timeout: BRIDGE.TIMEOUT_MS.respond });
+        const j = await r.json();
+        const ds = j && j.display_state;
+        if(ds){ if(ds.emotion) emotion=ds.emotion; if('ignite' in ds) ignite=ds.ignite; }
+        else if(j && j.emotion) emotion=j.emotion;
+        if(j && j.text) replyText = j.text;
+      }catch(e){ console.warn('[CIRA] respond fail', e); }
+    } else {                                // 离线占位
+      replyText = REPLY_PHRASES[Math.floor(Math.random()*REPLY_PHRASES.length)];
+    }
     lf.setEmotion(emotion); miniLf.setEmotion(emotion);
-    if(ignite){ lf.pulse(); miniLf.pulse(); }   // Core 标记 ignite：炸开式点亮（display_state.ignite 非空时）
+    if(ignite){ lf.pulse(); miniLf.pulse(); }   // Core 标记 ignite：炸开式点亮
 
-    // TTS 播放
+    // 4) TTS 播放（同时回显模型回复文字，解决“没有实际回应”的空壳感）
     wakePhase='speak'; setState(STATE.SPEAK);
-    wakeReply.textContent=text;
+    wakeReply.textContent = replyText || text;
+    wakeStatus.textContent = '回应中…';
     let ok=false;
-    try{
-      const r = await bridgeFetch('/v1/speak', { method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ schema:'response-package@1', text, emotion }),
-        timeout: BRIDGE.TIMEOUT_MS.speak });
-      const j = await r.json();
-      if(j && j.audio) ok = await playAudio(j.audio, j.format||'wav');
-      else if(j && j.fallback==='web_tts') ok = await webTTS(text);
-    }catch(e){ console.warn('[CIRA] speak fail', e); }
-    if(!ok) await webTTS(text || '我刚才走神了');
-    backToListen();
+    if(USE_BRIDGE){
+      try{
+        const r = await bridgeFetch('/v1/speak', { method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ schema:'response-package@1', text: replyText||text, emotion }),
+          timeout: BRIDGE.TIMEOUT_MS.speak });
+        const j = await r.json();
+        if(j && j.audio) ok = await playAudio(j.audio, j.format||'wav');
+        else if(j && j.fallback==='web_tts') ok = await webTTS(replyText||text);
+      }catch(e){ console.warn('[CIRA] speak fail', e); }
+    }
+    if(!ok) await webTTS(replyText || text || '我刚才走神了');
+    turnBusy=false; backToListen();
   }
   function backToListen(){
     wakePhase='listen'; speaking=false; heardAny=false;

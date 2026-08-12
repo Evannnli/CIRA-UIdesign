@@ -1,6 +1,6 @@
 # CIRA 项目传承文档（PROJECT_CONTEXT）
 
-> **最后更新**：2026-08-12（深夜） · **对应定版**：`git tag nebula-1.0`
+> **最后更新**：2026-08-12（深夜·续） · **对应定版**：`git tag nebula-1.0`
 > 本文件随代码走，换电脑/换模型/换协作者都能满血接手。改动重大里程碑后必须更新此处并 commit。
 
 ---
@@ -45,6 +45,8 @@
   - 规格：`android-proto/NEBULA_V1_SPEC.md`（参数全冻结）
 - 🟡 **模型集成前端已接通（2026-08-12 晚）**：`android-proto/cira-android.html` 占位逻辑已替换为真实桥接调用 —— `transcribe`(16k PCM)/`respond`(取 display_state.emotion 驱动星云)/`speak`(base64 播放)/`wake_ack`(唤醒音频)/`health`(启动自检) 全通；含双降级（BASE 为空=离线占位；桥不可达=文字输入/系统 TTS）。附 `android-proto/mock_bridge.js`（零依赖本地桥，自测全绿）供联调。
   - **真实地址已填**：`BRIDGE.BASE = http://192.168.31.235:8788`（Evan 提供，2026-08-12）。WorkBuddy 侧 Mac(192.168.31.33) 与该桥机网络隔离、连不到，需用户在**小米15**（与桥同局域网）实机验证。未确认项暂按需求文档默认（无鉴权 / 裸 16k PCM / 非流式），联调报错再对应切 `AUTH` / `TRANSCRIBE_WAV` / `USE_STREAM`。端点/字段需与 `docs/CIRA_APP_INTEGRATION_REQUIREMENTS.md` 对齐。
+  - **空壳问题已修（2026-08-12 深夜）**：原场景A「按住说话」按钮是**无模型的空心状态动画**（固定 思考1s→回应1.8s），被用户识破。已改为：该按钮触发真实对话轮（文字降级）→ 真实 `transcribe→respond→speak`；并在流转中回显 **「我听到：<你说的话>」** + 模型回复文字，证明真的听进去了、有实际回应。状态切换改为由真实模型延迟驱动，不再用固定 setTimeout 假动画。
+  - **真语音测试通道（https 代理）**：纯 http 下手机浏览器禁 `getUserMedia`（需安全上下文），故小米上只能打字、验不到真 ASR。已加 `android-proto/bridge_proxy.js`——本机 https(:8443) 提供页面 + 把 `/v1/*` 在 Mac 内部转发到 http 桥（同源、避开混内容拦截）。手机打开 `https://192.168.31.33:8443/cira-android.html?bridge=/`，接受自签证书后即解锁麦克风，可验 **说话→ASR→星云变色→语音回应** 全链路。自签证书在 `.tls/`（已 gitignore，需用时本地 openssl 重生成）。
 - ⏸️ **硬件**：ST77916 黑屏根因已定位（QPI→标准 SPI 8-bit），修复已 commit 未 push；Mac 崩溃阻断验证。
 
 ---
