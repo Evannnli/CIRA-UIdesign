@@ -409,17 +409,16 @@
         const bx = cx + x * rad * base * persp;       // 原轨道位置 (自转仍在)
         const by = cy + y * rad * base * persp + sagP;
 
-        // 触碰引力 (由近及远、缓慢汇入成一个"点")：靠近手指的粒子先被吸，
-        // 远的随自转转到附近才逐渐加入；最终都汇聚到手指处一个很小的点(无空心环)。
-        // 中心小星群(层4)几乎不被吸(自身引力场)。
+        // 触碰引力 = "宇宙中多了一个引力点"：无硬边界，整片星云都感受吸引，
+        // 随距离自然衰减但永不为零 → 近处猛、远处缓，随自转源源不断汇入手指处的点；
+        // 松手 at→0，偏移缓动回原轨道(宇宙复原)。中心小星群(层4)几乎不被吸。
         let tox = 0, toy = 0;
         if (at > 0.001) {
           const gx = this.attractor.x, gy = this.attractor.y;
           const ddx = gx - bx, ddy = gy - by;
           const dist = Math.hypot(ddx, ddy) || 1;
-          const R = base * 0.40;                      // 影响半径(不变，不靠扩大圈)
-          const prox = Math.max(0, 1 - dist / R);     // 1=贴近手指, 0=超出半径
-          const eff = prox;                           // 随半径自然衰减：中心强、边缘弱(中心井更深→手感更明显)
+          const Rs = base * 0.26;                     // 引力井尺度(非硬边界，只控制衰减快慢)
+          const eff = 1 / (1 + Math.pow(dist / Rs, 1.8)); // 随距离自然衰减，dist→∞ 时→0 但永不为0=持续吸引
           const layerDamp = p.layer === 4 ? 0.05 : (p.layer === 0 ? 0.72 : 1.0);
           const coreR = base * 0.028;                 // 汇聚成的"点"半径(不大，不变)
           const close = Math.min(1, at * eff * layerDamp * 1.40); // 0..1：收拢比例(中心增益)
