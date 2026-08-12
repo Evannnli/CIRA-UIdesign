@@ -424,7 +424,7 @@
           const eff = 1 / (1 + Math.pow(dist / Rs, 1.8)); // 随距离衰减，远处仍永不为0=持续吸引
           const layerDamp = p.layer === 4 ? 0.05 : (p.layer === 0 ? 0.72 : 1.0);
           const coreR = base * 0.028;                 // 汇聚成"点"的半径(不大)
-          const close = Math.min(1, at * eff * layerDamp * 1.70); // 0..1：收拢比例(中心增益)
+          const close = Math.min(1, at * eff * layerDamp * 1.45); // 0..1：收拢比例(略减增益，井没那么冲)
           // 目标绝对点 = 指尖 + 粒内稳定小簇偏移(让汇聚成一小团而非叠同一像素)
           const jx = p.cjr * Math.cos(p.cja) * coreR;
           const jy = p.cjr * Math.sin(p.cja) * coreR;
