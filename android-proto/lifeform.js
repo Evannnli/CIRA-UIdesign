@@ -421,7 +421,7 @@
           const eff = 1 / (1 + Math.pow(dist / Rs, 1.8)); // 随距离自然衰减，dist→∞ 时→0 但永不为0=持续吸引
           const layerDamp = p.layer === 4 ? 0.05 : (p.layer === 0 ? 0.72 : 1.0);
           const coreR = base * 0.028;                 // 汇聚成的"点"半径(不大，不变)
-          const close = Math.min(1, at * eff * layerDamp * 1.40); // 0..1：收拢比例(中心增益)
+          const close = Math.min(1, at * eff * layerDamp * 1.70); // 0..1：收拢比例(中心增益，更强)
           const targetDist = coreR + (dist - coreR) * (1 - close);
           const pull = dist - targetDist;             // 朝点收拢的位移量(随收拢→0)
           const ux = ddx / dist, uy = ddy / dist;
@@ -432,7 +432,7 @@
         const offMag2 = p.ax * p.ax + p.ay * p.ay;
         const tgtMag2 = tox * tox + toy * toy;
         const approaching = tgtMag2 > offMag2;
-        const erate = approaching ? (1 - Math.exp(-dt * 2.3)) : (1 - Math.exp(-dt * 0.85));
+        const erate = approaching ? (1 - Math.exp(-dt * 4.0)) : (1 - Math.exp(-dt * 0.85));
         p.ax += (tox - p.ax) * erate;
         p.ay += (toy - p.ay) * erate;
 
