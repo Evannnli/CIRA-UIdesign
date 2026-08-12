@@ -409,22 +409,25 @@
         const bx = cx + x * rad * base * persp;       // 原轨道位置 (自转仍在)
         const by = cy + y * rad * base * persp + sagP;
 
-        // 触碰引力 (由近及远、缓慢汇入)：只有靠近手指的粒子先被吸，
-        // 远的随自转转到附近才逐渐加入；中心小星群(层4)几乎不被吸(自身引力场)。
+        // 触碰引力 (由近及远、缓慢汇入成一个"点")：靠近手指的粒子先被吸，
+        // 远的随自转转到附近才逐渐加入；最终都汇聚到手指处一个很小的点(无空心环)。
+        // 中心小星群(层4)几乎不被吸(自身引力场)。
         let tox = 0, toy = 0;
         if (at > 0.001) {
           const gx = this.attractor.x, gy = this.attractor.y;
           const ddx = gx - bx, ddy = gy - by;
           const dist = Math.hypot(ddx, ddy) || 1;
-          const R = base * 0.46;                      // 影响半径
+          const R = base * 0.32;                      // 影响半径(小圈，只吸附近处)
           const prox = Math.max(0, 1 - dist / R);     // 1=贴近手指, 0=超出半径
           const eff = prox * prox;                    // 更强地偏向近端
           const layerDamp = p.layer === 4 ? 0.05 : (p.layer === 0 ? 0.72 : 1.0);
-          const maxPull = at * eff * layerDamp * base * 0.55;
+          const coreR = base * 0.028;                 // 汇聚成的"点"半径(不大)
+          const close = at * eff * layerDamp;         // 0..1：本次朝点的收拢比例
+          const targetDist = coreR + (dist - coreR) * (1 - close);
+          const pull = dist - targetDist;             // 朝点收拢的位移量(随收拢→0)
           const ux = ddx / dist, uy = ddy / dist;
-          const reach = Math.min(dist, maxPull);      // 不越过手指，避免塌成一点
-          tox = ux * reach - uy * maxPull * 0.16;     // 径向吸引 + 轻微切向旋吸
-          toy = uy * reach + ux * maxPull * 0.16;
+          tox = ux * pull - uy * pull * 0.18;         // 径向吸引 + 轻微切向旋吸(近点即归零)
+          toy = uy * pull + ux * pull * 0.18;
         }
         // 每颗粒子缓动逼近目标位移：吸引时渐进汇入，松手时缓慢落回原轨道
         const offMag2 = p.ax * p.ax + p.ay * p.ay;
