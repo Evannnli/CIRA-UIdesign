@@ -10,3 +10,6 @@
 # Python
 __pycache__/
 *.pyc
+
+# 本机 https 测试自签证书（含私钥，勿提交；需用时本地 openssl 重新生成）
+.tls/
