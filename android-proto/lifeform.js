@@ -169,6 +169,7 @@
             seed: Math.random() * 100,
             twPhase: Math.random() * TAU,
             twRate: 0.35 + Math.random() * 1.3,
+            ax: 0, ay: 0,   // 触碰吸力的缓动位移量 (相对原轨道)
           });
         }
       }
@@ -312,8 +313,8 @@
 
       this.pulseEnergy *= Math.exp(-dt * 2.0);
 
-      // 触碰引力平滑：按下快速汇聚(上升快)，松开缓慢回归(下降慢)
-      const aRate = this.attractTarget > this.attract ? 7.0 : 2.2;
+      // 触碰引力包络：手指按下=1，松开=0 (整体强度). 逐粒"缓慢汇入"由下方缓动实现
+      const aRate = this.attractTarget > this.attract ? 5.0 : 2.2;
       this.attract += (this.attractTarget - this.attract) * (1 - Math.exp(-dt * aRate));
 
       this._render(t, dt);
@@ -405,17 +406,36 @@
         const y = p.uy;
 
         const persp = 1 / (1 - z * 0.36);
-        let px = cx + x * rad * base * persp;
-        let py = cy + y * rad * base * persp + sagP;
+        const bx = cx + x * rad * base * persp;       // 原轨道位置 (自转仍在)
+        const by = cy + y * rad * base * persp + sagP;
 
-        // 触碰引力：星云被手指处吸引，朝引力点汇聚 (带轻微旋吸感)
+        // 触碰引力 (由近及远、缓慢汇入)：只有靠近手指的粒子先被吸，
+        // 远的随自转转到附近才逐渐加入；中心小星群(层4)几乎不被吸(自身引力场)。
+        let tox = 0, toy = 0;
         if (at > 0.001) {
           const gx = this.attractor.x, gy = this.attractor.y;
-          const dx = gx - px, dy = gy - py;
-          const pull = at * 0.62;
-          px += dx * pull - dy * pull * 0.14 * at;   // 径向吸引 + 轻微切向旋吸
-          py += dy * pull + dx * pull * 0.14 * at;
+          const ddx = gx - bx, ddy = gy - by;
+          const dist = Math.hypot(ddx, ddy) || 1;
+          const R = base * 0.46;                      // 影响半径
+          const prox = Math.max(0, 1 - dist / R);     // 1=贴近手指, 0=超出半径
+          const eff = prox * prox;                    // 更强地偏向近端
+          const layerDamp = p.layer === 4 ? 0.05 : (p.layer === 0 ? 0.72 : 1.0);
+          const maxPull = at * eff * layerDamp * base * 0.55;
+          const ux = ddx / dist, uy = ddy / dist;
+          const reach = Math.min(dist, maxPull);      // 不越过手指，避免塌成一点
+          tox = ux * reach - uy * maxPull * 0.16;     // 径向吸引 + 轻微切向旋吸
+          toy = uy * reach + ux * maxPull * 0.16;
         }
+        // 每颗粒子缓动逼近目标位移：吸引时渐进汇入，松手时缓慢落回原轨道
+        const offMag2 = p.ax * p.ax + p.ay * p.ay;
+        const tgtMag2 = tox * tox + toy * toy;
+        const approaching = tgtMag2 > offMag2;
+        const erate = approaching ? (1 - Math.exp(-dt * 1.5)) : (1 - Math.exp(-dt * 0.85));
+        p.ax += (tox - p.ax) * erate;
+        p.ay += (toy - p.ay) * erate;
+
+        const px = bx + p.ax;
+        const py = by + p.ay;
 
         const depth = (z + 1) * 0.5;
         const tw = 0.55 + 0.45 * Math.sin(t * p.twRate + p.twPhase);
