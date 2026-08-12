@@ -482,6 +482,7 @@
       else if(j && j.emotion) emotion=j.emotion;
     }catch(e){ console.warn('[CIRA] respond fail', e); }
     lf.setEmotion(emotion); miniLf.setEmotion(emotion);
+    if(ignite){ lf.pulse(); miniLf.pulse(); }   // Core 标记 ignite：炸开式点亮（display_state.ignite 非空时）
 
     // TTS 播放
     wakePhase='speak'; setState(STATE.SPEAK);
