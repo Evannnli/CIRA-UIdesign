@@ -309,22 +309,31 @@
   nebula.addEventListener('pointercancel', endTouch);
   nebula.addEventListener('pointerleave', endTouch);
 
-  // ---------- 按住说话 ----------
+  // ---------- 按住说话（场景A：主动对话，绝不说“哎/我在”） ----------
+  // 按住=录音；松手=把录到的音频送 ASR→Core→TTS。与场景B“语音唤醒”完全独立。
   const talkBtn=document.getElementById('talkBtn');
   function startTalk(){
-    if(wakeActive) return;
+    if(convMode==='push' && recording) return;       // 已在按住中，忽略重复触发
+    if(wakeTick){ clearInterval(wakeTick); wakeTick=null; }  // 若之前在唤醒连续听，先停掉
     setState(STATE.LISTEN);
     lf.setAudioLevel(0.7);
     talkBtn.classList.add('listening');
     talkBtn.innerHTML='聆听<br>中…';
+    convMode='push';
+    if(!micStream) startMic();                       // 开始录音(按住期间持续采集)
+    recording=true;
+    // 复用悬浮面板展示这一轮(但不说“哎/我在”——那是后台语音唤醒才说的)
+    wakePanel.classList.add('show');
+    wakeStatus.textContent='我在听…（说完松手发送）';
+    wakeReply.textContent='';
   }
   function endTalk(){
     talkBtn.classList.remove('listening');
     talkBtn.innerHTML='按住<br>说话';
     lf.setAudioLevel(0.3);
-    // 真交互：打开悬浮对话并跑一轮真实模型（http 下麦克风不可用→自动转文字输入，仍调真实模型）
-    if(!wakeActive) triggerWake();
-    runTurn();
+    if(convMode!=='push') return;                     // 仅“按住说话”路径走此释放逻辑
+    recording=false;                                  // 停止采集，保留已录缓冲
+    runTurn('push');                                  // 直接走真实模型链路，不触发唤醒词招呼
   }
   talkBtn.addEventListener('pointerdown', e=>{e.preventDefault(); startTalk();});
   talkBtn.addEventListener('pointerup', endTalk);
@@ -346,6 +355,8 @@
   const sndWo=document.getElementById('sndWo');
 
   let wakeActive=false;                 // 悬浮是否激活(替代旧的 state===WAKE 判断)
+  let convMode=null;                    // 'push'=场景A按住说话主动对话；'wake'=场景B语音唤醒连续听
+  let recording=false;                 // 麦克风是否在采集(按住期间 true；唤醒模式持续 true)
   let micStream=null, analyser=null, micData=null, vadRAF=null;
   let vadLevel=0;                       // 当前音量 0..1(驱动 VAD)
   let usingRealMic=false, fallbackBound=false;
@@ -372,6 +383,7 @@
       scriptNode=audioCtx.createScriptProcessor(4096,1,1);
       micChunks=[];
       scriptNode.onaudioprocess=(e)=>{
+        if(!recording) return;                        // 仅录音中才累积(按住期间/唤醒连续听)
         const ch=e.inputBuffer.getChannelData(0);
         micChunks.push(new Float32Array(ch));          // 累积原始采样，句尾送 ASR
         let sum=0; for(let i=0;i<ch.length;i++){ const v=ch[i]; sum+=v*v; }
@@ -404,6 +416,7 @@
   function triggerWake(){
     if(wakeActive){ keepListening(); return; }
     wakeActive=true;
+    convMode='wake';                   // 标记这是“语音唤醒”路径(说“哎/我在”+连续听)
     setState(STATE.LISTEN);            // 唤醒即进入聆听子状态
     wakePanel.classList.add('show');
     speaking=false; heardAny=false; wakePhase='listen';
@@ -431,7 +444,7 @@
         heardAny=true; speaking=true; silentStart=now;
         if(wakePhase==='listen') wakeStatus.textContent='我在听…';
       } else if(speaking && now-silentStart>SILENCE_MS){
-        runTurn(); return;           // 句尾→思考/回应（真实模型链路）
+        runTurn('wake'); return;           // 句尾→思考/回应（真实模型链路）
       }
       // 进度条：有人声=涨满；静默=按剩余静默预算回落；没人开口过=按初始预算
       const budget=heardAny?SILENCE_MS:INIT_SILENCE;
@@ -442,7 +455,7 @@
   }
   const delay = ms => new Promise(r=>setTimeout(r, ms));
   let turnBusy = false;
-  async function runTurn(){
+  async function runTurn(mode){
     if(turnBusy) return;                    // 防止 VAD 静默 + 按钮释放重复触发同一轮
     turnBusy = true;
     speaking=false; wakePhase='think';
@@ -466,7 +479,9 @@
 
     if(!text){                              // 没拿到任何输入：不假装回复，明确告知回到聆听
       wakeStatus.textContent='没听清，再说一次～';
-      await delay(1200); turnBusy=false; backToListen(); return;
+      await delay(1200); turnBusy=false;
+      if(mode==='wake') backToListen(); else endPushTurn();   // 唤醒=连续听；按住说话=回就绪
+      return;
     }
 
     // 2) 回显“我听到你说：…”，证明真的听进去了（解决“不知道听没听到”）
@@ -511,15 +526,23 @@
       }catch(e){ console.warn('[CIRA] speak fail', e); }
     }
     if(!ok) await webTTS(replyText || text || '我刚才走神了');
-    turnBusy=false; backToListen();
+    turnBusy=false;
+    if(mode==='wake') backToListen(); else endPushTurn();     // 唤醒=连续听；按住说话=回就绪
   }
-  function backToListen(){
+  function backToListen(){                    // 场景B 唤醒路径：回到连续聆听
     wakePhase='listen'; speaking=false; heardAny=false;
     setState(STATE.LISTEN); wakeStatus.textContent='继续聆听…';
     startWakeTick();
   }
+  function endPushTurn(){                      // 场景A 按住说话：一轮结束，回就绪态(不自动连续听)
+    wakePhase='idle';
+    setState(STATE.IDLE);
+    wakeStatus.textContent='按「按住说话」再聊一句';
+    wakeReply.textContent='';
+    // 由用户再次按住才触发下一轮；convMode 仍为 'push'
+  }
   function hideWake(){
-    wakeActive=false;
+    wakeActive=false; convMode=null; recording=false;
     if(wakeTick){ clearInterval(wakeTick); wakeTick=null; }
     if(vadRAF){ cancelAnimationFrame(vadRAF); vadRAF=null; }
     if(micStream){ micStream.getTracks().forEach(t=>t.stop()); micStream=null; }
