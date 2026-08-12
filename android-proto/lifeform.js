@@ -427,7 +427,10 @@
           const d = Math.hypot(ddx, ddy) || 1;
           const soft = base * 0.04;                    // 软化半径(防 d→0 奇点爆冲)
           const G = base * 30;                         // 引力强度(可调：越大整体越猛)
-          const a = (G / (d + soft)) * layerDamp * at; // 加速度 ∝ 1/距离：远小近大(类万有引力)
+          const Rmax = base * 0.45;                    // 最大影响半径：圈外星星完全不受力，手指扫到才动(可调：越小圈越小)
+          // 平滑边缘窗口：圈内≈1、圈外→0，用 smoothstep 避免硬边"进圈即死"
+          const win = d >= Rmax ? 0 : (1 - (function(t){ return t*t*(3-2*t); })(d / Rmax));
+          const a = (G / (d + soft)) * layerDamp * at * win; // 加速度 ∝ 1/距离：远小近大(类万有引力)，超出 Rmax 即 0
           const ux = ddx / d, uy = ddy / d;
           const sw = a * 0.12 * Math.min(1, d / (base * 0.12)); // 切向旋吸(近点归零，远处才被卷入)
           p.vx += (ux * a - uy * sw) * dt;
