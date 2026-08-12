@@ -1,6 +1,6 @@
 # CIRA 项目传承文档（PROJECT_CONTEXT）
 
-> **最后更新**：2026-08-12 · **对应定版**：`git tag nebula-1.0`
+> **最后更新**：2026-08-12（晚） · **对应定版**：`git tag nebula-1.0`
 > 本文件随代码走，换电脑/换模型/换协作者都能满血接手。改动重大里程碑后必须更新此处并 commit。
 
 ---
@@ -43,7 +43,8 @@
 - ✅ **星云交互 v1.0 定稿**（2026-08-12）：触碰"万有引力式汇聚"手感验收通过；6 种状态动效重做；唤醒 VAD 流转（说一句才进思考、不说静静等）。
   - 源：`android-proto/cira-android.html` + `android-proto/lifeform.js`
   - 规格：`android-proto/NEBULA_V1_SPEC.md`（参数全冻结）
-- 🟡 **模型集成需求已出**：`docs/CIRA_APP_INTEGRATION_REQUIREMENTS.md`（5 端点 + CORS + session + display-state 归属 + 降级 + 延迟预算）。**待 Core/LS 侧准备桥接服务**。
+- 🟡 **模型集成前端已接通（2026-08-12 晚）**：`android-proto/cira-android.html` 占位逻辑已替换为真实桥接调用 —— `transcribe`(16k PCM)/`respond`(取 display_state.emotion 驱动星云)/`speak`(base64 播放)/`wake_ack`(唤醒音频)/`health`(启动自检) 全通；含双降级（BASE 为空=离线占位；桥不可达=文字输入/系统 TTS）。附 `android-proto/mock_bridge.js`（零依赖本地桥，自测全绿）供联调。
+  - **待对侧给真实地址**：用户已实现桥接服务，`BRIDGE.BASE` 填真实 `http://<IP>:<port>` 即可在小米15 实机联调（端点/字段需与 `docs/CIRA_APP_INTEGRATION_REQUIREMENTS.md` 对齐；若有出入告诉我改）。
 - ⏸️ **硬件**：ST77916 黑屏根因已定位（QPI→标准 SPI 8-bit），修复已 commit 未 push；Mac 崩溃阻断验证。
 
 ---
@@ -59,8 +60,8 @@
 
 ## 六、下一步
 
-1. **（阻塞）对侧准备桥接服务**：按 `docs/CIRA_APP_INTEGRATION_REQUIREMENTS.md` 出 FastAPI 桥（5 端点），放开 CORS 或走 Capacitor 原生 HTTP。
-2. **模型端到端联调**：拿服务地址后，把原型占位（ai.m4a/wo.mp3 + REPLY_PHRASES + 硬编码状态）换成真实调用，先做 Node 侧联调验证延迟/兜底，再封 Capacitor APK。
+1. ✅ **桥接服务已就绪**：对侧按 `docs/CIRA_APP_INTEGRATION_REQUIREMENTS.md` 实现。前端调用已接好，等用户给真实 `http://<IP>:<port>` 填进 `BRIDGE.BASE` 即在小米15 实测。
+2. **（进行中）模型端到端联调**：填真实地址后在手机实测 `transcribe→respond→speak` 全链路（麦克风权限需 https 或 Capacitor 安全上下文；纯 http 局域网下浏览器麦克风会被拦，走 `wakeMore` 文字降级）。验证延迟/兜底后封 Capacitor APK。
 3. **封 Capacitor**：前端（本原型）+ 原生模块（唤醒词/悬浮窗/VAD/ASR/TTS/Core-LS 调用）。
 4. **硬件恢复**（可选）：Windows 笔记本或 USB-TTL 适配器到位后，续烧录验证。
 
