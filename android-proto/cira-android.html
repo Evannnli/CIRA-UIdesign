@@ -219,6 +219,7 @@
   let silentStart=0;                    // 最近一次静默起点(用于句尾判定)
   let wakeTick=null;
   let wakePhase='listen';               // listen / think / speak
+  let wakeStart=0;                       // 本轮唤醒起始时刻(初始静默超时基准)
 
   const VAD_THRESHOLD = 0.06;           // 归一化 RMS 阈值(有无人声)
   const SILENCE_MS    = 1800;           // 句尾静默判定(说完后静默多久算一句说完)
@@ -282,7 +283,7 @@
   }
   function startWakeTick(){
     if(wakeTick) clearInterval(wakeTick);
-    _tickT0=performance.now(); silentStart=_tickT0;
+    wakeStart=performance.now(); silentStart=wakeStart;
     wakeTick=setInterval(()=>{
       const now=performance.now();
       const active=vadLevel>VAD_THRESHOLD;
@@ -294,12 +295,11 @@
       }
       // 进度条：有人声=涨满；静默=按剩余静默预算回落；没人开口过=按初始预算
       const budget=heardAny?SILENCE_MS:INIT_SILENCE;
-      const el=heardAny?(now-silentStart):(now-_tickT0);
+      const el=heardAny?(now-silentStart):(now-wakeStart);
       wakeFill.style.transform=`scaleX(${Math.max(0,1-el/budget)})`;
-      if(!heardAny && now-_tickT0>INIT_SILENCE) hideWake();
+      if(!heardAny && now-wakeStart>INIT_SILENCE) hideWake();
     },60);
   }
-  let _tickT0=0;
   function endSentence(){
     speaking=false; wakePhase='think';
     if(wakeTick){ clearInterval(wakeTick); wakeTick=null; }
