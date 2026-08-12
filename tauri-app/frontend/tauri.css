@@ -1,0 +1,90 @@
+/* ============================================================
+   CIRA 悬浮窗专用样式 (Tauri)
+   - body 透明，露出圆屏设备；窗口无边框
+   - 隐藏页头/页脚/调试控制台，只留圆屏脸
+   - device-shell 占满 360x360 窗口
+   ============================================================ */
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: transparent !important;   /* 关键：透明窗才能悬浮 */
+  overflow: hidden;
+}
+
+/* 隐藏桌面调试布局的冗余部分 */
+header,
+footer,
+aside.control-panel,
+.touch-hint,
+.subtitle {
+  display: none !important;
+}
+
+main.stage {
+  display: block;
+  padding: 0;
+  margin: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.device-wrap {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+}
+
+/* 圆屏设备本体 = 整个悬浮窗的内容 */
+.device-shell {
+  width: 360px;
+  height: 360px;
+  margin: 0 auto;
+  position: relative;
+  cursor: grab;
+}
+.device-shell:active {
+  cursor: grabbing;
+}
+
+/* 状态徽标小角标，悬浮时仍可看到当前状态 */
+.state-badge {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 30;
+  background: rgba(0,0,0,0.35);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 10px;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  pointer-events: none;
+}
+
+/* 让 canvas 圆屏铺满，去掉原型的盒子阴影（透明窗不需要外圈） */
+.lifeform-canvas {
+  border-radius: 50%;
+  display: block;
+}
+
+/* 调试时按快捷键唤出控制台：默认隐藏，由 Rust 侧/JS 切换 .dev-mode */
+body.dev-mode aside.control-panel {
+  display: block !important;
+  position: fixed;
+  top: 0; right: 0;
+  width: 280px;
+  height: 100vh;
+  background: #111;
+  color: #eee;
+  overflow-y: auto;
+  z-index: 9999;
+  padding: 12px;
+}

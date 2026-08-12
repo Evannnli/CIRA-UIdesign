@@ -1,0 +1,14 @@
+[package]
+name = "cira-floating"
+version = "0.1.0"
+description = "CIRA 悬浮助手"
+authors = ["Evan"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

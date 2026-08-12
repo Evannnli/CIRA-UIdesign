@@ -1,0 +1,5 @@
+# Tauri 依赖与构建产物（相对本目录）
+node_modules/
+src-tauri/target/
+src-tauri/gen/
+.DS_Store
