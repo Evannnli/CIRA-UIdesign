@@ -49,6 +49,7 @@ App 是 **Capacitor（WebView + JS）**，Core/LS 是 **Python**。两者不在�
     "modality":"language", "ignite":null,
     "display_state": { "schema":"display-state@1", "emotion":"comfort", "status":"speaking", "ignite":null } }
   ```
+  - 注：`display_state.status` 此处固定填 `"speaking"`（"已产出一句、即将播放"的约定值）；`listening`/`thinking` 不在此响应里，由 App 按调用节奏自设（见 §4）。
 
 ### 1.3 `POST /v1/speak` — 回应→音频（TTS）
 - 请求（JSON）：`response-package@1`（或直接 `{ "text":"...", "emotion":"..." }`）。
@@ -83,15 +84,19 @@ App 是 **Capacitor（WebView + JS）**，Core/LS 是 **Python**。两者不在�
 
 ---
 
-## 4. [必做] display-state 归属：以 Core 为准
-- 星云的**表情/配色/状态必须由 Core 的 `emotion` 与 `status` 驱动**，不能 App 自己编。
-- 因此 `/v1/respond` 响应必须带回 `display_state`（`emotion` + `status`）。
-- `status` 取值：`idle|listening|thinking|speaking|sleeping|alert`。App 映射：
-  - `listening` → 星云"开放接收"态（已在原型实现 VAD 聆听）
-  - `thinking` → 内向漩涡态
-  - `speaking` → 向外辐射波 + 播放音频
-  - `emotion` → 决定星云主色调（happy/excited/curious/comfort… 同原型 STATE_PROFILE 调色板）
-- 这样"CIRA 此刻什么心情"与"星云怎么演"是同一份数据，不会脱节。
+## 4. [必做] display_state 归属：emotion/ignite 归 Core，status 生命周期归 App
+> **分工（已与 App 端确认，最干净、零冻结改动）**
+
+- `emotion`（9 值之一）+ `ignite`（bool）是 **回复内容本身的属性**，由 Core 在生成 `response-package` 时天然确定 → 桥在 `/v1/respond` 响应里通过 `display_state` 一并返回（即 `response-package` 原字段 `emotion`/`ignite` 的透传，**Core 函数签名零改动、零冻结**）。
+- `status`（`listening|thinking|speaking|wake|idle`）是 **App 调用生命周期的副产品**：App 开麦 + VAD 命中 → `listening`；App 发出 `/v1/respond` → `thinking`；收到响应 → `speaking`；原生唤醒 → `wake`；空闲 → `idle`。**Core 不参与 `listening`/`thinking`**（前者在 App 端跑 VAD、后者只是网络往返），把这些 `status` 塞进 Core 是错位的，故 `status` 由 App 自管。
+- 桥在 `/v1/respond` 返回的 `display_state` 约定为 `{ emotion, ignite, status:"speaking" }`（`status:"speaking"` 是"已产出一句、即将播放"的约定值；App 收到后自管 timing，`listening`/`thinking` 由 App 自设，不依赖此字段）。
+
+App 侧映射：
+- `emotion` → 决定星云主色调（happy/excited/curious/comfort… 同原型 `STATE_PROFILE` 调色板）。**这是接真模型后唯一权威来源，App 不再自己编情绪**（之前原型硬编码占位文案 + 自编情绪，接模型即废）。
+- `ignite` → 是否"点亮/炸开"强化视觉（如某些需要强烈回应的句子），App 据此决定是否触发 `burst` 级表现。
+- `thinking` 阶段 App 尚无 Core 的 `emotion`，沿用上一句 `emotion` 或中性暖白 + 内向漩涡动画（`vortex`），不依赖 Core。
+
+这样"CIRA 此刻什么心情"（emotion/ignite，Core 权威）与"交互处于哪一步"（status，App 权威）职责清晰、不脱节。
 
 ---
 
@@ -109,7 +114,7 @@ App 是 **Capacitor（WebView + JS）**，Core/LS 是 **Python**。两者不在�
 
 ## 6. [推荐] 流式 `respond_stream`（降低延迟）
 - 对话陪伴对延迟敏感，建议加 `POST /v1/respond_stream`（SSE 或 chunked）。
-- 流式顺序：`display_state(listening)` → `thinking` → `response-package` 文本分片 → `audio` 分片（边生成边播）。
+- 流式顺序（注意 `status` 仍由 App 自管）：App 在发出 `/v1/respond_stream` 即自设 `thinking`；流式只产出 `response-package` 文本分片 + `audio` 分片（边生成边播），首包带 `display_state.emotion/ignite`（Core 权威）；App 收到首包即切 `speaking`。`listening` 由 App 在 VAD 命中时自设，不在流里。
 - 冻结与否不影响首版联调；**但首版若只给非流式 `/respond`，App 的"思考"动画需等整句生成完才切"说话"，会有可感知停顿**——请评估首版是否就要流式。
 
 ---
@@ -140,7 +145,7 @@ App 是 **Capacitor（WebView + JS）**，Core/LS 是 **Python**。两者不在�
 ## 10. App 端会做的对应改造（让那边知道契约闭环）
 1. 麦克风采集改 16k mono PCM → `POST /transcribe`。
 2. "按住说话"/VAD 句尾 → `POST /v1/respond`（带 session_id）→ 取 `response-package` + `display_state`。
-3. 按 `display_state.status/emotion` 切星云状态与配色；`thinking` 期间播"思考"动画。
+3. `emotion`/`ignite` 取 Core 的 `display_state` 驱动配色与点亮；`listening/thinking/speaking` 由 App 调用节奏自管（VAD 命中→listening，发 respond→thinking，收到→speaking）；`thinking` 用 vortex 动画 + 沿用上次 emotion。
 4. `POST /v1/speak` → base64 解码播放，`speaking` 态同步。
 5. 唤醒（原生 Porcupine）→ `GET /wake_ack` 播"哎/我在" → 进聆听。
 6. 所有调用失败按 §5 降级；服务地址走可配置常量（先填调试 LAN 地址）。
