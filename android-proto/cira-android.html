@@ -70,8 +70,11 @@
   #wakeTimer{width:100%;height:3px;border-radius:3px;background:rgba(255,200,160,.14);overflow:hidden;margin-top:4px;}
   #wakeTimerFill{height:100%;width:100%;background:linear-gradient(90deg,#ff8a3d,#ff9eb5);
     transform-origin:left;transition:none;}
+  #wakeMic{font-size:11px;opacity:.45;letter-spacing:.5px;}
   #wakeMore{font-size:12px;opacity:.7;border:1px solid rgba(255,200,160,.25);
     border-radius:14px;padding:6px 12px;background:transparent;color:var(--ink);flex:0 0 auto;}
+  #wakeMore.hold{font-size:13px;padding:9px 18px;background:rgba(255,150,90,.18);
+    border-color:rgba(255,200,160,.5);opacity:.95;}
 
   /* 状态预览条(开发用)：单独停在某个状态看动效 */
   #devBar{position:fixed;top:calc(env(safe-area-inset-top,0) + 44px);left:0;right:0;
@@ -112,6 +115,7 @@
     <div id="wakeInfo">
       <div id="wakeReply">我在</div>
       <div id="wakeStatus">正在聆听…</div>
+      <div id="wakeMic">麦克风模拟中</div>
       <div id="wakeTimer"><div id="wakeTimerFill"></div></div>
     </div>
     <button id="wakeMore">继续说</button>
@@ -174,7 +178,7 @@
   // ---------- 按住说话 ----------
   const talkBtn=document.getElementById('talkBtn');
   function startTalk(){
-    if(state===STATE.WAKE) return;
+    if(wakeActive) return;
     setState(STATE.LISTEN);
     lf.setAudioLevel(0.7);
     talkBtn.classList.add('listening');
@@ -195,41 +199,134 @@
   talkBtn.addEventListener('pointercancel', endTalk);
   talkBtn.addEventListener('pointerleave', e=>{ if(state===STATE.LISTEN) endTalk(); });
 
-  // ---------- 场景B 模拟唤醒 ----------
+  // ---------- 场景B 模拟唤醒 + 麦克风 VAD(能量阈值) ----------
+  // 注：此原型未接入真实模型。唤醒/回话/思考/回应均为本地模拟，
+  // 仅用麦克风音量模拟"是否有人说话"，验证"说一句才进思考、不说静静等"的流转手感。
   const wakePanel=document.getElementById('wakePanel');
   const wakeFill=document.getElementById('wakeTimerFill');
   const wakeReply=document.getElementById('wakeReply');
   const wakeStatus=document.getElementById('wakeStatus');
+  const wakeMic=document.getElementById('wakeMic');
+  const wakeMore=document.getElementById('wakeMore');
   const sndAi=document.getElementById('sndAi');
   const sndWo=document.getElementById('sndWo');
-  let wakeTimer=null, WAKE_MS=10000;
+
+  let wakeActive=false;                 // 悬浮是否激活(替代旧的 state===WAKE 判断)
+  let micStream=null, analyser=null, micData=null, vadRAF=null;
+  let vadLevel=0;                       // 当前音量 0..1(驱动 VAD)
+  let usingRealMic=false, fallbackBound=false;
+  let speaking=false, heardAny=false;   // 本轮回合：是否在收录中 / 是否曾检测到人声
+  let silentStart=0;                    // 最近一次静默起点(用于句尾判定)
+  let wakeTick=null;
+  let wakePhase='listen';               // listen / think / speak
+
+  const VAD_THRESHOLD = 0.06;           // 归一化 RMS 阈值(有无人声)
+  const SILENCE_MS    = 1800;           // 句尾静默判定(说完后静默多久算一句说完)
+  const INIT_SILENCE  = 6000;           // 初始静默超时(唤醒后一直无人开口才退出)
+  const REPLY_PHRASES = ['我在听呢','你想说什么？','嗯，我明白','好的，接着说'];
+
+  function startMic(){
+    if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){ fallbackMic(); return; }
+    navigator.mediaDevices.getUserMedia({audio:true}).then(stream=>{
+      micStream=stream; usingRealMic=true;
+      const AC=window.AudioContext||window.webkitAudioContext;
+      const ac=new AC();
+      const src=ac.createMediaStreamSource(stream);
+      analyser=ac.createAnalyser(); analyser.fftSize=512;
+      src.connect(analyser); micData=new Uint8Array(analyser.fftSize);
+      wakeMic.textContent='麦克风已开启 · 说话试试';
+      vadLoop();
+    }).catch(()=>{ fallbackMic(); });
+  }
+  function vadLoop(){
+    if(analyser){
+      analyser.getByteTimeDomainData(micData);
+      let sum=0; for(let i=0;i<micData.length;i++){ const v=(micData[i]-128)/128; sum+=v*v; }
+      const rms=Math.sqrt(sum/micData.length);
+      vadLevel=Math.min(1, rms*3.2);   // 放大到易判区间
+    }
+    vadRAF=requestAnimationFrame(vadLoop);
+  }
+  // 降级：局域网 http 通常不是安全上下文，getUserMedia 拿不到权限 → 用"按住说话"模拟
+  function fallbackMic(){
+    usingRealMic=false; wakeMic.textContent='未授权麦克风 · 请“按住说话”';
+    wakeMore.textContent='按住说话'; wakeMore.classList.add('hold');
+    if(!fallbackBound){
+      fallbackBound=true;
+      wakeMore.addEventListener('pointerdown', e=>{ e.preventDefault(); vadLevel=0.9; });
+      const release=()=>{ vadLevel=0; };
+      wakeMore.addEventListener('pointerup', release);
+      wakeMore.addEventListener('pointercancel', release);
+      wakeMore.addEventListener('pointerleave', release);
+    }
+  }
+  function keepListening(){            // 真实麦模式：点"继续说"续命(重置初始静默)
+    if(!wakeActive) return;
+    startWakeTick();
+    wakeStatus.textContent='继续聆听…';
+  }
 
   function triggerWake(){
-    setState(STATE.WAKE);
+    if(wakeActive){ keepListening(); return; }
+    wakeActive=true;
+    setState(STATE.LISTEN);            // 唤醒即进入聆听子状态
     wakePanel.classList.add('show');
-    const useAi = Math.random()<0.5;
-    wakeReply.textContent = useAi? '哎' : '我在';
+    speaking=false; heardAny=false; wakePhase='listen';
+    const useAi=Math.random()<0.5;
+    wakeReply.textContent=useAi?'哎':'我在';
     (useAi?sndAi:sndWo).currentTime=0;
     (useAi?sndAi:sndWo).play().catch(()=>{});
     wakeStatus.textContent='正在聆听…';
-    resetWakeTimer();
+    startMic();
+    startWakeTick();
   }
-  function resetWakeTimer(){
-    const start=performance.now();
-    if(wakeTimer) clearInterval(wakeTimer);
-    wakeTimer=setInterval(()=>{
-      const left=WAKE_MS-(performance.now()-start);
-      wakeFill.style.transform=`scaleX(${Math.max(0,left/WAKE_MS)})`;
-      if(left<=0){ clearInterval(wakeTimer); wakeTimer=null; hideWake(); }
-    },80);
+  function startWakeTick(){
+    if(wakeTick) clearInterval(wakeTick);
+    _tickT0=performance.now(); silentStart=_tickT0;
+    wakeTick=setInterval(()=>{
+      const now=performance.now();
+      const active=vadLevel>VAD_THRESHOLD;
+      if(active){
+        heardAny=true; speaking=true; silentStart=now;
+        if(wakePhase==='listen') wakeStatus.textContent='我在听…';
+      } else if(speaking && now-silentStart>SILENCE_MS){
+        endSentence(); return;        // 句尾→思考/回应
+      }
+      // 进度条：有人声=涨满；静默=按剩余静默预算回落；没人开口过=按初始预算
+      const budget=heardAny?SILENCE_MS:INIT_SILENCE;
+      const el=heardAny?(now-silentStart):(now-_tickT0);
+      wakeFill.style.transform=`scaleX(${Math.max(0,1-el/budget)})`;
+      if(!heardAny && now-_tickT0>INIT_SILENCE) hideWake();
+    },60);
+  }
+  let _tickT0=0;
+  function endSentence(){
+    speaking=false; wakePhase='think';
+    if(wakeTick){ clearInterval(wakeTick); wakeTick=null; }
+    setState(STATE.THINK); wakeStatus.textContent='思考中…';
+    setTimeout(()=>{
+      wakePhase='speak'; setState(STATE.SPEAK);
+      wakeReply.textContent=REPLY_PHRASES[Math.floor(Math.random()*REPLY_PHRASES.length)];
+      wakeStatus.textContent='回应中…';   // (模型未接入：回应为占位文案)
+      setTimeout(()=>{
+        wakePhase='listen'; speaking=false; heardAny=false;
+        setState(STATE.LISTEN); wakeStatus.textContent='继续聆听…';
+        startWakeTick();
+      },1800);
+    },1000);
   }
   function hideWake(){
+    wakeActive=false;
+    if(wakeTick){ clearInterval(wakeTick); wakeTick=null; }
+    if(vadRAF){ cancelAnimationFrame(vadRAF); vadRAF=null; }
+    if(micStream){ micStream.getTracks().forEach(t=>t.stop()); micStream=null; }
     wakePanel.classList.remove('show');
-    if(state===STATE.WAKE) setState(STATE.IDLE);
+    setState(STATE.IDLE);
   }
   document.getElementById('wakeFab').addEventListener('click', triggerWake);
   document.getElementById('wakeMore').addEventListener('click', ()=>{
-    if(state===STATE.WAKE){ wakeStatus.textContent='继续聆听…'; resetWakeTimer(); }
+    if(usingRealMic) keepListening();   // 真实麦：点"继续说"续命
+    // 降级模式：wakeMore 已绑定为"按住说话"，click 忽略
   });
 
   // ---------- 状态预览条(开发用)：点哪个停在哪个，不被说话流转覆盖 ----------
