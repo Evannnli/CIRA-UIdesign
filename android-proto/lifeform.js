@@ -417,12 +417,12 @@
           const gx = this.attractor.x, gy = this.attractor.y;
           const ddx = gx - bx, ddy = gy - by;
           const dist = Math.hypot(ddx, ddy) || 1;
-          const R = base * 0.40;                      // 影响半径(再扩一点，吸力更强)
+          const R = base * 0.40;                      // 影响半径(不变，不靠扩大圈)
           const prox = Math.max(0, 1 - dist / R);     // 1=贴近手指, 0=超出半径
-          const eff = prox * prox;                    // 更强地偏向近端
+          const eff = prox;                           // 随半径自然衰减：中心强、边缘弱(中心井更深→手感更明显)
           const layerDamp = p.layer === 4 ? 0.05 : (p.layer === 0 ? 0.72 : 1.0);
           const coreR = base * 0.028;                 // 汇聚成的"点"半径(不大，不变)
-          const close = Math.min(1, at * eff * layerDamp * 1.30); // 0..1：收拢比例(再增益)
+          const close = Math.min(1, at * eff * layerDamp * 1.40); // 0..1：收拢比例(中心增益)
           const targetDist = coreR + (dist - coreR) * (1 - close);
           const pull = dist - targetDist;             // 朝点收拢的位移量(随收拢→0)
           const ux = ddx / dist, uy = ddy / dist;
@@ -433,7 +433,7 @@
         const offMag2 = p.ax * p.ax + p.ay * p.ay;
         const tgtMag2 = tox * tox + toy * toy;
         const approaching = tgtMag2 > offMag2;
-        const erate = approaching ? (1 - Math.exp(-dt * 1.5)) : (1 - Math.exp(-dt * 0.85));
+        const erate = approaching ? (1 - Math.exp(-dt * 2.3)) : (1 - Math.exp(-dt * 0.85));
         p.ax += (tox - p.ax) * erate;
         p.ay += (toy - p.ay) * erate;
 
