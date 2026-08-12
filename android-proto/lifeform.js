@@ -113,6 +113,11 @@
 
       this.pf = { ...STATE_PROFILE.idle };
 
+      // 触碰引力：手指处成为引力点，星云向其汇聚
+      this.attract = 0;        // 当前影响强度 0..1 (平滑)
+      this.attractTarget = 0;  // 手指按下=1，松开=0
+      this.attractor = { x: 0, y: 0 };
+
       this._resize();
       this._buildParticles();
       this._rebuildSprites(true);
@@ -134,6 +139,7 @@
         { n: Math.round(560 * d), r0: 0.130, r1: 0.270, s0: 0.40, s1: 1.00, flow: 0.85, spin: 1.00, id: 1 },
         { n: Math.round(280 * d), r0: 0.270, r1: 0.420, s0: 0.34, s1: 0.85, flow: 0.45, spin: 0.55, id: 2 },
         { n: Math.round(140 * d), r0: 0.420, r1: 0.500, s0: 0.30, s1: 0.70, flow: 0.30, spin: 0.35, id: 3 },
+        { n: Math.round(340 * d), r0: 0.006, r1: 0.055, s0: 0.70, s1: 1.70, flow: 1.70, spin: 2.30, id: 4 }, // 中心聚集小星群 (亮、密、紧)
       ];
 
       this.particles = [];
@@ -199,6 +205,9 @@
     setAudioLevel(v) { this.audioLevel = Math.max(0, Math.min(1, v)); }
     setTtsProgress(v) { this.ttsProgress = Math.max(0, Math.min(1, v)); }
     pulse() { this.pulseEnergy = 1.0; }
+    // 触碰引力：手指落点成为引力中心，星云向其汇聚
+    setAttractor(x, y) { this.attractor.x = x; this.attractor.y = y; this.attractTarget = 1; }
+    clearAttractor() { this.attractTarget = 0; }
     setDensity(v) {
       this.density = Math.max(0.3, Math.min(2.0, v));
       this._buildParticles();
@@ -303,6 +312,10 @@
 
       this.pulseEnergy *= Math.exp(-dt * 2.0);
 
+      // 触碰引力平滑：按下快速汇聚(上升快)，松开缓慢回归(下降慢)
+      const aRate = this.attractTarget > this.attract ? 7.0 : 2.2;
+      this.attract += (this.attractTarget - this.attract) * (1 - Math.exp(-dt * aRate));
+
       this._render(t, dt);
       requestAnimationFrame(this._loop);
     }
@@ -312,6 +325,7 @@
       const P = this.pf;
       const tctx = this.tctx;
       const pulse = this.pulseEnergy;
+      const at = this.attract;   // 触碰引力强度 0..1
 
       // === A. 拖尾层衰减 ===
       const fade = 1 - Math.exp(-dt * P.trailFade);
@@ -328,7 +342,7 @@
         + pulse * 0.26;
 
       const spread = P.spread * breathScale * (1 + pulse * 0.22);
-      const gain = P.gain * (1 + pulse * 0.35);
+      const gain = P.gain * (1 + pulse * 0.35) + at * 0.18;
       const audio = this.audioLevel;
 
       // === B. 中心雾核 ===
@@ -391,8 +405,17 @@
         const y = p.uy;
 
         const persp = 1 / (1 - z * 0.36);
-        const px = cx + x * rad * base * persp;
-        const py = cy + y * rad * base * persp + sagP;
+        let px = cx + x * rad * base * persp;
+        let py = cy + y * rad * base * persp + sagP;
+
+        // 触碰引力：星云被手指处吸引，朝引力点汇聚 (带轻微旋吸感)
+        if (at > 0.001) {
+          const gx = this.attractor.x, gy = this.attractor.y;
+          const dx = gx - px, dy = gy - py;
+          const pull = at * 0.62;
+          px += dx * pull - dy * pull * 0.14 * at;   // 径向吸引 + 轻微切向旋吸
+          py += dy * pull + dx * pull * 0.14 * at;
+        }
 
         const depth = (z + 1) * 0.5;
         const tw = 0.55 + 0.45 * Math.sin(t * p.twRate + p.twPhase);
@@ -401,6 +424,7 @@
         if (p.layer === 3) a2 *= 0.40;
         if (p.layer === 2) a2 *= 0.60;
         if (p.layer === 0) a2 *= 0.52;
+        if (p.layer === 4) a2 *= 0.95;   // 中心小星群：保持明亮
         if (a2 <= 0.004) continue;
 
         const d = Math.max(1.3, p.size * persp * (0.6 + depth * 0.8) * 3.1);

@@ -13,7 +13,6 @@
     font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Segoe UI",sans-serif;
     color:var(--ink);user-select:none;-webkit-user-select:none;touch-action:none;}
   #nebula{position:fixed;inset:0;width:100%;height:100%;display:block;}
-  #fx{position:fixed;inset:0;width:100%;height:100%;display:block;pointer-events:none;z-index:2;}
 
   /* 顶部状态条 */
   #statebar{position:fixed;top:env(safe-area-inset-top,0);left:0;right:0;
@@ -77,7 +76,6 @@
 </head>
 <body>
   <canvas id="nebula"></canvas>
-  <canvas id="fx"></canvas>
 
   <div id="statebar"><div id="stateText">待机</div></div>
 
@@ -117,6 +115,8 @@
   const lf     = new LightLifeform(nebula, { fullscreen:true });
   const miniLf = new LightLifeform(mini);   // 场景B：圆内小星云
   miniLf.setEmotion('comfort');
+  lf.setDensity(1.45);     // 更密的星云
+  miniLf.setDensity(1.25);
 
   // ---------- 状态机 ----------
   const STATE = { IDLE:'idle', LISTEN:'listening', THINK:'thinking', SPEAK:'speaking', WAKE:'wake' };
@@ -133,42 +133,25 @@
     if(holdMs) stateUntil = performance.now()+holdMs;
   }
 
-  // ---------- 戳：脉冲 + 涟漪 ----------
-  const fx = document.getElementById('fx');
-  const fxc = fx.getContext('2d');
-  let fxW=0, fxH=0;
-  function fxResize(){ fxW=window.innerWidth; fxH=window.innerHeight;
-    fx.width=fxW*DPR; fx.height=fxH*DPR; fx.style.width=fxW+'px'; fx.style.height=fxH+'px';
-    fxc.setTransform(DPR,0,0,DPR,0,0); }
-  fxResize(); window.addEventListener('resize', fxResize);
-
-  const ripples = [];
-  function doPoke(x,y){
-    lf.pulse();             // 弹性脉冲 = “活”的反馈
-    miniLf.pulse();
-    ripples.push({x,y,t:performance.now(),life:850});
-  }
-  // fx 涟漪层 (独立 RAF, 叠加在主星云之上)
-  function fxLoop(now){
-    fxc.clearRect(0,0,fxW,fxH);
-    for(let i=ripples.length-1;i>=0;i--){
-      const pk=ripples[i]; const age=(now-pk.t)/pk.life;
-      if(age>=1){ ripples.splice(i,1); continue; }
-      const rr=age*Math.min(fxW,fxH)*0.28;
-      fxc.strokeStyle=`rgba(255,190,140,${(1-age)*0.8})`;
-      fxc.lineWidth=3*(1-age)+0.5;
-      fxc.beginPath(); fxc.arc(pk.x,pk.y,rr,0,6.283); fxc.stroke();
-      if(age<0.3){ fxc.fillStyle=`rgba(255,240,220,${(0.3-age)*3})`;
-        fxc.beginPath(); fxc.arc(pk.x,pk.y,6,0,6.283); fxc.fill(); }
-    }
-    requestAnimationFrame(fxLoop);
-  }
-  requestAnimationFrame(fxLoop);
+  // ---------- 触碰引力：星云被手指吸引，朝落点汇聚 ----------
+  // 按下=开始吸引(快速汇聚)；移动=引力点跟随；松手=缓慢回到原轨道
+  let touching = false;
+  function touchXY(e){ return { x: e.clientX, y: e.clientY }; }
 
   nebula.addEventListener('pointerdown', e=>{
-    if(e.target!==nebula) return;
-    doPoke(e.clientX, e.clientY);
+    touching = true;
+    const p = touchXY(e);
+    lf.setAttractor(p.x, p.y);
   });
+  nebula.addEventListener('pointermove', e=>{
+    if(!touching) return;
+    const p = touchXY(e);
+    lf.setAttractor(p.x, p.y);   // 引力点随手指移动
+  });
+  function endTouch(){ if(touching){ touching = false; lf.clearAttractor(); } }
+  nebula.addEventListener('pointerup', endTouch);
+  nebula.addEventListener('pointercancel', endTouch);
+  nebula.addEventListener('pointerleave', endTouch);
 
   // ---------- 按住说话 ----------
   const talkBtn=document.getElementById('talkBtn');
