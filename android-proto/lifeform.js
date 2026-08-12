@@ -212,7 +212,7 @@
     pulse() { this.pulseEnergy = 1.0; }
     // 触碰引力：手指落点成为引力中心，星云向其汇聚
     setAttractor(x, y) { this.attractor.x = x; this.attractor.y = y; this.attractTarget = 1; }
-    clearAttractor() { this.attractTarget = 0; }
+    clearAttractor() { this.attractTarget = 0; this.attract = 0; }  // 松手：引力强度当帧归零(手指一离开引力立刻消失)
     setDensity(v) {
       this.density = Math.max(0.3, Math.min(2.0, v));
       this._buildParticles();
@@ -438,8 +438,8 @@
           p.vx += (ux * a - uy * sw) * dt;
           p.vy += (uy * a + ux * sw) * dt;
         } else {
-          p.vx += (-p.ax) * 2.2 * dt;                   // 松手：弱回复弹簧 → 偏移缓回原轨道
-          p.vy += (-p.ay) * 2.2 * dt;
+          p.vx += (-p.ax) * 3.2 * dt;                   // 松手：回复弹簧(略快，散开明显但不硬切) → 偏移回原轨道
+          p.vy += (-p.ay) * 3.2 * dt;
         }
         const damp = Math.exp(-dt * (at > 0.001 ? 2.0 : 1.4)); // 限速+稳定阻尼
         p.vx *= damp; p.vy *= damp;
