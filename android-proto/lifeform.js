@@ -170,6 +170,8 @@
             twPhase: Math.random() * TAU,
             twRate: 0.35 + Math.random() * 1.3,
             ax: 0, ay: 0,   // 触碰吸力的缓动位移量 (相对原轨道)
+            // 被吸到引力点后在"点"内的稳定小簇偏移(归一化圆盘 r≤1)，使汇聚成一小团而非叠同一像素
+            cjr: Math.sqrt(Math.random()), cja: Math.random() * TAU,
           });
         }
       }
@@ -409,24 +411,32 @@
         const bx = cx + x * rad * base * persp;       // 原轨道位置 (自转仍在)
         const by = cy + y * rad * base * persp + sagP;
 
-        // 触碰引力 = "宇宙中多了一个引力点"：无硬边界，整片星云都感受吸引，
-        // 随距离自然衰减但永不为零 → 近处猛、远处缓，随自转源源不断汇入手指处的点；
-        // 松手 at→0，偏移缓动回原轨道(宇宙复原)。中心小星群(层4)几乎不被吸。
+        // 触碰引力 = "宇宙中多了一个引力点"：目标是指尖处一个绝对点，星星被持续钉在该点；
+        // 星云自转带着 base 转走时，偏移量自动补偿 → 没松手就不会飘走(旧版"到点即松手"的 bug 已修)。
+        // 无硬边界、随距离自然衰减但永不为零 → 近处猛、远处缓，随自转源源不断汇入；
+        // 松手 at→0，目标归零，偏移缓动回原轨道(宇宙复原)。中心小星群(层4)几乎不被吸。
         let tox = 0, toy = 0;
         if (at > 0.001) {
           const gx = this.attractor.x, gy = this.attractor.y;
-          const ddx = gx - bx, ddy = gy - by;
+          const ddx = gx - bx, ddy = gy - by;          // 从原轨道指向引力点
           const dist = Math.hypot(ddx, ddy) || 1;
-          const Rs = base * 0.26;                     // 引力井尺度(非硬边界，只控制衰减快慢)
-          const eff = 1 / (1 + Math.pow(dist / Rs, 1.8)); // 随距离自然衰减，dist→∞ 时→0 但永不为0=持续吸引
+          const Rs = base * 0.26;                     // 引力井尺度(只控制衰减快慢，非硬边界)
+          const eff = 1 / (1 + Math.pow(dist / Rs, 1.8)); // 随距离衰减，远处仍永不为0=持续吸引
           const layerDamp = p.layer === 4 ? 0.05 : (p.layer === 0 ? 0.72 : 1.0);
-          const coreR = base * 0.028;                 // 汇聚成的"点"半径(不大，不变)
-          const close = Math.min(1, at * eff * layerDamp * 1.70); // 0..1：收拢比例(中心增益，更强)
-          const targetDist = coreR + (dist - coreR) * (1 - close);
-          const pull = dist - targetDist;             // 朝点收拢的位移量(随收拢→0)
-          const ux = ddx / dist, uy = ddy / dist;
-          tox = ux * pull - uy * pull * 0.18;         // 径向吸引 + 轻微切向旋吸(近点即归零)
-          toy = uy * pull + ux * pull * 0.18;
+          const coreR = base * 0.028;                 // 汇聚成"点"的半径(不大)
+          const close = Math.min(1, at * eff * layerDamp * 1.70); // 0..1：收拢比例(中心增益)
+          // 目标绝对点 = 指尖 + 粒内稳定小簇偏移(让汇聚成一小团而非叠同一像素)
+          const jx = p.cjr * Math.cos(p.cja) * coreR;
+          const jy = p.cjr * Math.sin(p.cja) * coreR;
+          const tx = gx + jx, ty = gy + jy;
+          // 需施加的相对位移：把粒子从原轨道带到绝对点上(不再用 dist-coreR，避免"到点即松手")
+          let vx = tx - bx, vy = ty - by;
+          const vlen = Math.hypot(vx, vy) || 1;
+          // 轻微切向旋吸(绕点卷动，幅度随 close，越贴点越弱)
+          const ang = 0.18 * close;
+          const ca = Math.cos(ang), sa = Math.sin(ang);
+          tox = (vx * ca - vy * sa) * close;
+          toy = (vx * sa + vy * ca) * close;
         }
         // 每颗粒子缓动逼近目标位移：吸引时渐进汇入，松手时缓慢落回原轨道
         const offMag2 = p.ax * p.ax + p.ay * p.ay;
