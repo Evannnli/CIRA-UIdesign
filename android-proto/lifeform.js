@@ -38,12 +38,13 @@
   };
 
   const STATE_PROFILE = {
-    idle:      { breath:.040, spread:1.00, coreGlow:.55, swirl:.055, flow:.42, ripple:0,   morph:'sphere',  trailFade:7.5,  gain:1.00, sag:0  },
-    listening: { breath:.060, spread:1.20, coreGlow:.72, swirl:.16,  flow:.78, ripple:1,   morph:'scatter', trailFade:9.5,  gain:1.12, sag:0  },
-    thinking:  { breath:.028, spread:0.88, coreGlow:.88, swirl:.62,  flow:.98, ripple:0,   morph:'vortex',  trailFade:5.5,  gain:1.05, sag:0  },
-    speaking:  { breath:.070, spread:1.06, coreGlow:.76, swirl:.10,  flow:.66, ripple:.45, morph:'wave',    trailFade:8.5,  gain:1.10, sag:0  },
-    offline:   { breath:.030, spread:0.78, coreGlow:.20, swirl:.018, flow:.20, ripple:0,   morph:'droop',   trailFade:6.0,  gain:0.38, sag:22 },
-    wake:      { breath:.100, spread:1.34, coreGlow:.98, swirl:.34,  flow:1.15,ripple:0,   morph:'burst',   trailFade:4.5,  gain:1.30, sag:0  },
+    // 基调：暖色体积光场 + 有机呼吸 + 自转。各状态用同一套"动效词汇"(呼吸/旋转/收束/声波)表达不同意图，构成一个系列。
+    idle:      { breath:.046, spread:1.00, coreGlow:.58, swirl:.060, flow:.48, ripple:0,    morph:'sphere',  trailFade:7.5, gain:1.00, sag:0 }, // 待机：静息呼吸
+    listening: { breath:.064, spread:1.12, coreGlow:.74, swirl:.18,  flow:.72, ripple:.85,  morph:'listen',  trailFade:9.0, gain:1.12, sag:0 }, // 聆听：开放接收，声波环轻涌
+    thinking:  { breath:.026, spread:0.84, coreGlow:.94, swirl:.60,  flow:1.00,ripple:0,    morph:'vortex',  trailFade:5.0, gain:1.06, sag:0 }, // 思考：向内卷的漩涡，屏息收紧
+    speaking:  { breath:.082, spread:1.12, coreGlow:.80, swirl:.13,  flow:.72, ripple:.70,  morph:'speak',   trailFade:8.0, gain:1.14, sag:0 }, // 回应：向外辐射的波 + 声波环
+    offline:   { breath:.030, spread:0.78, coreGlow:.20, swirl:.018, flow:.20, ripple:0,    morph:'droop',   trailFade:6.0, gain:0.38, sag:22 }, // 休眠：暗、垂、近静止
+    wake:      { breath:.104, spread:1.34, coreGlow:.98, swirl:.34,  flow:1.15,ripple:0,    morph:'burst',   trailFade:4.5, gain:1.32, sag:0 }, // 唤醒：从一点炸开，最亮最活
   };
 
   const TAU = Math.PI * 2;
@@ -382,22 +383,23 @@
 
         let extraSpin = 0, sagP = P.sag, alphaMul = 1;
         switch (P.morph) {
-          case 'scatter':
-            rad *= 1 + audio * 0.28 + 0.08 * Math.sin(t * 3.4 + p.seed);
+          case 'listen':   // 聆听：开放接收——随声音微张 + 极缓差速，像在"侧耳"
+            rad *= 1 + audio * 0.24 + 0.06 * Math.sin(t * 2.3 + p.seed * 1.7);
+            extraSpin = (p.r0 - 0.25) * t * 0.12;
             break;
-          case 'vortex':
-            rad *= 0.82 + 0.18 * Math.sin(t * 1.1 + p.seed * 0.3);
-            extraSpin = (1.0 - p.r0 * 2.2) * t * 0.85;
+          case 'vortex':   // 思考：向内卷的漩涡——外圈转更快、整体屏息收紧(呼应"引力汇聚"的收拢)
+            rad *= 0.84 + 0.16 * Math.sin(t * 1.0 + p.seed * 0.3);
+            extraSpin = (1.05 - p.r0 * 2.4) * t * 0.92;
             break;
-          case 'wave':
-            rad *= 1 + 0.13 * Math.sin(t * 4.2 + p.uy * 5.0 + this.ttsProgress * TAU);
+          case 'speak':    // 回应：向外辐射的波——内层先动、沿半径向外传播(像把声音推出去)
+            rad *= 1 + 0.16 * Math.sin(t * 3.6 + p.r0 * 9.0 + this.ttsProgress * TAU);
             break;
           case 'droop':
             rad *= 0.92;
             sagP = P.sag * (0.5 + (p.uy + 1) * 0.5);
             alphaMul = 0.55;
             break;
-          case 'burst':
+          case 'burst':    // 唤醒：从一点炸开
             rad *= 1 + pulse * 0.45;
             break;
         }

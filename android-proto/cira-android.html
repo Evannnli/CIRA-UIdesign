@@ -72,6 +72,14 @@
     transform-origin:left;transition:none;}
   #wakeMore{font-size:12px;opacity:.7;border:1px solid rgba(255,200,160,.25);
     border-radius:14px;padding:6px 12px;background:transparent;color:var(--ink);flex:0 0 auto;}
+
+  /* 状态预览条(开发用)：单独停在某个状态看动效 */
+  #devBar{position:fixed;top:calc(env(safe-area-inset-top,0) + 44px);left:0;right:0;
+    display:flex;justify-content:center;gap:7px;z-index:6;opacity:.55;pointer-events:auto;}
+  #devBar button{font-size:11px;letter-spacing:1px;padding:6px 11px;border-radius:14px;
+    border:1px solid rgba(255,200,160,.22);background:rgba(30,18,10,.5);color:var(--ink);
+    -webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);}
+  #devBar button.on{background:rgba(255,150,90,.30);border-color:rgba(255,200,160,.55);opacity:1;}
 </style>
 </head>
 <body>
@@ -80,6 +88,15 @@
   <div id="statebar"><div id="stateText">待机</div></div>
 
   <button id="wakeFab">模拟<br>唤醒</button>
+
+  <!-- 状态预览条(开发用)：点哪个就停在哪个状态 -->
+  <div id="devBar">
+    <button data-s="idle">待机</button>
+    <button data-s="listening">聆听</button>
+    <button data-s="thinking">思考</button>
+    <button data-s="speaking">回应</button>
+    <button data-s="wake">唤醒</button>
+  </div>
 
   <div id="talkWrap">
     <button id="talkBtn">按住<br>说话</button>
@@ -122,6 +139,7 @@
   const STATE = { IDLE:'idle', LISTEN:'listening', THINK:'thinking', SPEAK:'speaking', WAKE:'wake' };
   let state = STATE.IDLE;
   let stateUntil = 0;
+  let talkT1 = null, talkT2 = null;   // 按住说话自动流转的定时器(供预览条清除)
   const stateText = document.getElementById('stateText');
   const label = { idle:'待机', listening:'聆听', thinking:'思考', speaking:'回应', wake:'唤醒' };
   const emotionOf = { idle:'calm', listening:'curious', thinking:'thinking', speaking:'happy', wake:'comfort' };
@@ -168,8 +186,8 @@
     lf.setAudioLevel(0.3);
     if(state===STATE.LISTEN){
       setState(STATE.THINK, 1000);
-      setTimeout(()=>{ if(state===STATE.THINK) setState(STATE.SPEAK, 1800); }, 1000);
-      setTimeout(()=>{ if(state===STATE.SPEAK) setState(STATE.IDLE); }, 1000+1800);
+      talkT1 = setTimeout(()=>{ if(state===STATE.THINK) setState(STATE.SPEAK, 1800); }, 1000);
+      talkT2 = setTimeout(()=>{ if(state===STATE.SPEAK) setState(STATE.IDLE); }, 1000+1800);
     }
   }
   talkBtn.addEventListener('pointerdown', e=>{e.preventDefault(); startTalk();});
@@ -213,6 +231,18 @@
   document.getElementById('wakeMore').addEventListener('click', ()=>{
     if(state===STATE.WAKE){ wakeStatus.textContent='继续聆听…'; resetWakeTimer(); }
   });
+
+  // ---------- 状态预览条(开发用)：点哪个停在哪个，不被说话流转覆盖 ----------
+  const devBar = document.getElementById('devBar');
+  const devBtns = devBar.querySelectorAll('button');
+  function previewState(s){
+    if(talkT1){ clearTimeout(talkT1); talkT1=null; }
+    if(talkT2){ clearTimeout(talkT2); talkT2=null; }
+    if(s===STATE.WAKE) triggerWake();
+    else setState(s);
+    devBtns.forEach(b=> b.classList.toggle('on', b.dataset.s===s));
+  }
+  devBtns.forEach(b=> b.addEventListener('click', ()=> previewState(b.dataset.s)));
 
   document.addEventListener('gesturestart', e=>e.preventDefault());
 })();
