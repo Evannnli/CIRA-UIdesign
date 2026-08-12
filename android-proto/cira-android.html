@@ -132,9 +132,13 @@
 
   // ================= 桥接服务配置（接真模型用） =================
   // BASE 留空 = 离线占位模式（用本地 ai.m4a/wo.mp3 + 硬编码文案）。
-  // 填上地址即走真实调用：BASE 例 'http://192.168.31.33:8000'
+  // 填上地址即走真实调用。Evan 提供的桥：http://192.168.31.235:8788 （2026-08-12）
+  // 没确认的项先按需求文档默认假设，联调报错再对应切换：
+  //   AUTH           —— 暂留空（对端无鉴权）
+  //   TRANSCRIBE_WAV —— false=发裸 16-bit/16k/mono PCM；若对端收 wav 容器改 true
+  //   USE_STREAM     —— false=非流式 /v1/respond；若对端实现 respond_stream 改 true
   const BRIDGE = {
-    BASE: '',
+    BASE: 'http://192.168.31.235:8788',
     AUTH: '',                 // 若桥需鉴权填 'Bearer xxxxx'，否则留空
     TIMEOUT_MS: { transcribe: 15000, respond: 12000, speak: 12000, wake: 6000, health: 4000 },
     TRANSCRIBE_WAV: false,    // true=桥收 wav 容器；false=收裸 16-bit/16k/mono PCM
