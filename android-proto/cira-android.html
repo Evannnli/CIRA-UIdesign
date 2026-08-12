@@ -102,6 +102,7 @@
   </div>
 
   <div id="talkWrap">
+    <div id="mainCaption"><div class="mc-status"></div><div class="mc-reply"></div></div>
     <button id="talkBtn">按住<br>说话</button>
     <div id="talkHint">点屏幕任意处可“戳”一下</div>
   </div>
@@ -312,8 +313,12 @@
   // ---------- 按住说话（场景A：主动对话，绝不说“哎/我在”） ----------
   // 按住=录音；松手=把录到的音频送 ASR→Core→TTS。与场景B“语音唤醒”完全独立。
   const talkBtn=document.getElementById('talkBtn');
+  const mainCaption=document.getElementById('mainCaption');
+  const mcStatus=mainCaption.querySelector('.mc-status');
+  const mcReply=mainCaption.querySelector('.mc-reply');
   function startTalk(){
     if(convMode==='push' && recording) return;       // 已在按住中，忽略重复触发
+    if(wakeActive) hideWake();                        // 若悬浮面板开着(之前唤醒)，切主屏对话先收起它
     if(wakeTick){ clearInterval(wakeTick); wakeTick=null; }  // 若之前在唤醒连续听，先停掉
     setState(STATE.LISTEN);
     lf.setAudioLevel(0.7);
@@ -322,10 +327,10 @@
     convMode='push';
     if(!micStream) startMic();                       // 开始录音(按住期间持续采集)
     recording=true;
-    // 复用悬浮面板展示这一轮(但不说“哎/我在”——那是后台语音唤醒才说的)
-    wakePanel.classList.add('show');
-    wakeStatus.textContent='我在听…（说完松手发送）';
-    wakeReply.textContent='';
+    // 结果展示在主屏气泡(悬浮面板仅语音唤醒时出现，与按住说话无关)
+    mainCaption.classList.add('show');
+    mcStatus.textContent='我在听…（说完松手发送）';
+    mcReply.textContent='';
   }
   function endTalk(){
     talkBtn.classList.remove('listening');
@@ -458,9 +463,12 @@
   async function runTurn(mode){
     if(turnBusy) return;                    // 防止 VAD 静默 + 按钮释放重复触发同一轮
     turnBusy = true;
+    const ui = (mode==='push')                         // 显示目标：按住说话→主屏气泡；唤醒→悬浮面板
+      ? { status:mcStatus, reply:mcReply }
+      : { status:wakeStatus, reply:wakeReply };
     speaking=false; wakePhase='think';
     if(wakeTick){ clearInterval(wakeTick); wakeTick=null; }
-    setState(STATE.THINK); wakeStatus.textContent='思考中…';
+    setState(STATE.THINK); ui.status.textContent='思考中…';
 
     // 1) 取用户说的话：真实麦克风 ASR，或文字降级（http 下麦克风不可用）
     let text=null;
@@ -478,14 +486,14 @@
     }
 
     if(!text){                              // 没拿到任何输入：不假装回复，明确告知回到聆听
-      wakeStatus.textContent='没听清，再说一次～';
+      ui.status.textContent='没听清，再说一次～';
       await delay(1200); turnBusy=false;
       if(mode==='wake') backToListen(); else endPushTurn();   // 唤醒=连续听；按住说话=回就绪
       return;
     }
 
     // 2) 回显“我听到你说：…”，证明真的听进去了（解决“不知道听没听到”）
-    wakeStatus.textContent = '我听到：「'+text+'」';
+    ui.status.textContent = '我听到：「'+text+'」';
     await delay(650);
 
     // 3) Core 回应：emotion/ignite 取桥的 display_state（权威），status 由 App 自管
@@ -511,8 +519,8 @@
 
     // 4) TTS 播放（同时回显模型回复文字，解决“没有实际回应”的空壳感）
     wakePhase='speak'; setState(STATE.SPEAK);
-    wakeReply.textContent = replyText || text;
-    wakeStatus.textContent = '回应中…';
+    ui.reply.textContent = replyText || text;
+    ui.status.textContent = '回应中…';
     let ok=false;
     if(USE_BRIDGE){
       try{
@@ -537,8 +545,9 @@
   function endPushTurn(){                      // 场景A 按住说话：一轮结束，回就绪态(不自动连续听)
     wakePhase='idle';
     setState(STATE.IDLE);
-    wakeStatus.textContent='按「按住说话」再聊一句';
-    wakeReply.textContent='';
+    mcStatus.textContent='按「按住说话」再聊一句';
+    mcReply.textContent='';
+    mainCaption.classList.remove('show');
     // 由用户再次按住才触发下一轮；convMode 仍为 'push'
   }
   function hideWake(){
