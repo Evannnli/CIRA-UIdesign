@@ -15,9 +15,13 @@ const os = require('os');
 
 const DIR = __dirname;
 const PORT = parseInt(process.argv[2] || '8443', 10);
-// 桥地址可由环境变量覆盖：CIRA_BRIDGE=http://127.0.0.1:8000 node bridge_proxy.js
-// 不指定时回退到原局域网真桥（换网络/位置后只需改这个 env，不必改代码）
-const BRIDGE = process.env.CIRA_BRIDGE || 'http://192.168.31.235:8788';
+// 桥地址解析优先级：环境变量 CIRA_BRIDGE > 同目录 bridge_target.txt（一行）> 默认局域网真桥
+// 换网络/位置时只需改 bridge_target.txt 一行（或设 env），不必改代码
+let BRIDGE = process.env.CIRA_BRIDGE || 'http://192.168.31.235:8788';
+try {
+  const _t = fs.readFileSync(path.join(DIR, 'bridge_target.txt'), 'utf8').trim();
+  if(_t && !process.env.CIRA_BRIDGE) BRIDGE = _t;
+} catch(e){ /* 文件不存在则用默认真桥 */ }
 
 // 取本机首个非回环 IPv4，换网后自动显示新地址，不用手改
 function lanIP(){

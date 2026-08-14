@@ -1,0 +1,13 @@
+# CIRA 桥地址切换文件
+# 用法：复制本文件为 bridge_target.txt，填入当前要连的桥地址（删掉前面的 # 注释符）
+# 优先级：环境变量 CIRA_BRIDGE > 本文件 bridge_target.txt > 默认 http://192.168.31.235:8788
+# 留空 / 不存在本文件 → 用默认（仅在家同网时可用）
+
+# 在家同网直连真桥：
+# http://192.168.31.235:8788
+
+# 出门经内网穿透（换成你的隧道地址，例：Cloudflare Tunnel / ngrok / frp）
+# 例 Cloudflare Tunnel 固定地址：
+# https://cira-bridge.你的域名.com
+# 例 Cloudflare 临时地址（每次重启会变）：
+# https://cira-bridge-xxxx.trycloudflare.com
