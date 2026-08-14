@@ -1,0 +1,75 @@
+/* cira-phone.css — 手机 / 独立窗口(app) 形态覆盖
+ * 仅在小屏或 standalone(已安装) 时生效, 桌面双栏原型完全不变。
+ * 目的: 让圆屏设备填满视口、隐藏无关 UI、调试面板改为浮起开关。
+ */
+#cira-debug-toggle {
+  display: none;
+  position: fixed;
+  right: 14px;
+  bottom: 18px;
+  z-index: 60;
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255, 138, 61, 0.92);
+  color: #1a0d08;
+  font-size: 22px;
+  font-weight: 700;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  cursor: pointer;
+}
+
+@media (max-width: 560px), (display-mode: standalone) {
+  html, body { height: 100%; }
+  body {
+    overflow: hidden;
+    background: #0A060E;
+    margin: 0;
+    -webkit-tap-highlight-color: transparent;
+  }
+  header, footer { display: none; }
+
+  main.stage {
+    display: block;
+    height: 100vh;
+    height: 100dvh;
+  }
+
+  .device-wrap {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* 圆屏按视口缩放填满 (实际像素仍是 360×360, 忠实于真机) */
+  .device-shell {
+    transform: scale(var(--cira-scale, 1));
+    transform-origin: center center;
+  }
+
+  .touch-hint { display: none; }
+
+  /* 调试面板: 默认移出屏幕, 点浮起按钮再展开 */
+  .control-panel {
+    position: fixed;
+    right: 10px;
+    top: 10px;
+    width: 230px;
+    max-height: 82vh;
+    overflow: auto;
+    background: rgba(18, 11, 7, 0.94);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 14px;
+    padding: 12px;
+    transform: translateX(130%);
+    transition: transform 0.25s ease;
+    z-index: 50;
+  }
+  .control-panel.open { transform: translateX(0); }
+
+  #cira-debug-toggle { display: block; }
+}

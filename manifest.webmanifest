@@ -1,0 +1,16 @@
+{
+  "name": "CIRA · 光生命体陪伴机",
+  "short_name": "CIRA",
+  "description": "CIRA 儿童 AI 陪伴设备 · 设备端交互原型 (Device Runtime / 模块3)",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["standalone", "fullscreen"],
+  "orientation": "portrait",
+  "background_color": "#0A060E",
+  "theme_color": "#0A060E",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "icon-maskable.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}
