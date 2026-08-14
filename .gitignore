@@ -13,3 +13,6 @@ __pycache__/
 
 # 本机 https 测试自签证书（含私钥，勿提交；需用时本地 openssl 重新生成）
 .tls/
+
+# 真实桥地址切换文件（含当前可用地址，勿提交；参考 bridge_target.txt.example）
+bridge_target.txt
