@@ -83,6 +83,23 @@
     border:1px solid rgba(255,200,160,.22);background:rgba(30,18,10,.5);color:var(--ink);
     -webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);}
   #devBar button.on{background:rgba(255,150,90,.30);border-color:rgba(255,200,160,.55);opacity:1;}
+
+  /* 常驻文字输入坞：主屏/唤醒共用入口，浮于唤醒面板之上(z-index 高于面板) */
+  #textDock{position:fixed;left:0;right:0;
+    bottom:calc(env(safe-area-inset-bottom,0) + 158px);
+    display:flex;justify-content:center;padding:0 16px;z-index:9;pointer-events:none;}
+  #textDock > *{pointer-events:auto;}
+  #mainText{flex:1;max-width:min(86vw,420px);min-width:0;height:44px;border-radius:22px;
+    border:1px solid rgba(255,180,120,.3);background:rgba(22,13,8,.72);color:var(--ink);
+    font-size:15px;padding:0 16px;outline:none;
+    -webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);}
+  #mainText::placeholder{color:rgba(246,233,220,.4);}
+  #sendBtn{flex:0 0 auto;height:44px;margin-left:8px;padding:0 20px;border-radius:22px;border:none;
+    background:radial-gradient(circle at 35% 30%,#ff8a3d,#a8552a);color:#1a0e08;
+    font-size:15px;font-weight:600;letter-spacing:1px;}
+  #sendBtn:active{transform:scale(.95);}
+  /* 唤醒态：文字框上移到悬浮面板之上，且不被面板盖住 */
+  body.wake-on #textDock{bottom:calc(env(safe-area-inset-bottom,0) + 178px);}
 </style>
 </head>
 <body>
@@ -105,6 +122,12 @@
     <div id="mainCaption"><div class="mc-status"></div><div class="mc-reply"></div></div>
     <button id="talkBtn">按住<br>说话</button>
     <div id="talkHint">点屏幕任意处可“戳”一下</div>
+  </div>
+
+  <!-- 常驻文字输入入口：位于按住说话上方；语音唤醒时浮于悬浮面板之上 -->
+  <div id="textDock">
+    <input id="mainText" type="text" placeholder="说点什么…（也可打字）" autocomplete="off" inputmode="text" />
+    <button id="sendBtn" type="button">发送</button>
   </div>
 
   <!-- 场景B 悬浮生命体 -->
@@ -316,6 +339,8 @@
   const mainCaption=document.getElementById('mainCaption');
   const mcStatus=mainCaption.querySelector('.mc-status');
   const mcReply=mainCaption.querySelector('.mc-reply');
+  const mainText=document.getElementById('mainText');
+  const sendBtn=document.getElementById('sendBtn');
   function startTalk(){
     if(convMode==='push' && recording) return;       // 已在按住中，忽略重复触发
     if(wakeActive) hideWake();                        // 若悬浮面板开着(之前唤醒)，切主屏对话先收起它
@@ -344,6 +369,17 @@
   talkBtn.addEventListener('pointerup', endTalk);
   talkBtn.addEventListener('pointercancel', endTalk);
   talkBtn.addEventListener('pointerleave', e=>{ if(state===STATE.LISTEN) endTalk(); });
+
+  // ---------- 常驻文字框：直接提交跑真实模型（独立于麦克风） ----------
+  function sendMainText(){
+    const text=(mainText.value||'').trim();
+    if(!text) return;
+    mainText.value='';
+    // 唤醒中→作为唤醒轮(显示到悬浮面板，保持唤醒)；否则→主屏主动对话(push，显示主屏气泡)
+    runTurnFromText(text, wakeActive ? 'wake' : 'push');
+  }
+  sendBtn.addEventListener('click', sendMainText);
+  mainText.addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); sendMainText(); } });
 
   // ---------- 场景B 悬浮对话：真实模型链路（唤醒→聆听→思考→回应） ----------
   // 已接通桥接服务(http://192.168.31.235:8788)：VAD 仅用于判断"说一句才进思考、不说静静等"，
@@ -421,6 +457,7 @@
   function triggerWake(){
     if(wakeActive){ keepListening(); return; }
     wakeActive=true;
+    document.body.classList.add('wake-on');   // 标记唤醒态：文字框浮于悬浮面板之上
     convMode='wake';                   // 标记这是“语音唤醒”路径(说“哎/我在”+连续听)
     setState(STATE.LISTEN);            // 唤醒即进入聆听子状态
     wakePanel.classList.add('show');
@@ -491,7 +528,22 @@
       if(mode==='wake') backToListen(); else endPushTurn();   // 唤醒=连续听；按住说话=回就绪
       return;
     }
-
+    await runTurnCore(text, mode, ui);
+  }
+  // 常驻文字框直接提交：已有文本，跳过 ASR/输入弹窗，直接跑真实模型
+  async function runTurnFromText(text, mode){
+    if(turnBusy) return;
+    turnBusy = true;
+    const ui = (mode==='push')
+      ? { status:mcStatus, reply:mcReply }
+      : { status:wakeStatus, reply:wakeReply };
+    if(mode==='push') mainCaption.classList.add('show');   // 主屏对话：确保气泡可见
+    speaking=false; wakePhase='think';
+    if(wakeTick){ clearInterval(wakeTick); wakeTick=null; }
+    setState(STATE.THINK); ui.status.textContent='思考中…';
+    await runTurnCore(text, mode, ui);
+  }
+  async function runTurnCore(text, mode, ui){
     // 2) 回显“我听到你说：…”，证明真的听进去了（解决“不知道听没听到”）
     ui.status.textContent = '我听到：「'+text+'」';
     await delay(650);
@@ -551,7 +603,10 @@
     // 由用户再次按住才触发下一轮；convMode 仍为 'push'
   }
   function hideWake(){
+    // 用户在打字、或输入框里还有内容时，不退出唤醒（保留文字窗口、不中断对话）
+    if(mainText.value.trim() || document.activeElement===mainText) return;
     wakeActive=false; convMode=null; recording=false;
+    document.body.classList.remove('wake-on');
     if(wakeTick){ clearInterval(wakeTick); wakeTick=null; }
     if(vadRAF){ cancelAnimationFrame(vadRAF); vadRAF=null; }
     if(micStream){ micStream.getTracks().forEach(t=>t.stop()); micStream=null; }
