@@ -38,6 +38,21 @@
     50%{box-shadow:0 0 0 8px rgba(255,170,100,.55),0 0 48px rgba(255,170,100,.6);}}
   #talkHint{font-size:12px;opacity:.45;letter-spacing:1px;}
 
+  /* 首次打开引导（onboarding）：脉冲提示，首次交互后自动隐藏 */
+  #welcomeHint{position:fixed;left:50%;transform:translateX(-50%) translateY(10px);
+    bottom:calc(env(safe-area-inset-bottom,0) + 132px);z-index:7;
+    max-width:min(82vw,380px);text-align:center;padding:11px 18px;border-radius:22px;
+    background:rgba(28,16,9,.6);border:1px solid rgba(255,185,130,.32);
+    color:var(--ink);font-size:14px;letter-spacing:1px;line-height:1.5;
+    -webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);
+    box-shadow:0 0 30px rgba(255,160,90,.18);
+    opacity:0;pointer-events:none;transition:opacity .5s ease, transform .5s ease;}
+  #welcomeHint.show{opacity:1;transform:translateX(-50%) translateY(0);
+    animation:welcomePulse 2.2s ease-in-out infinite;}
+  #welcomeHint.hide{opacity:0;transform:translateX(-50%) translateY(10px);}
+  @keyframes welcomePulse{0%,100%{box-shadow:0 0 24px rgba(255,160,90,.18);}
+    50%{box-shadow:0 0 46px rgba(255,160,90,.42);border-color:rgba(255,200,160,.55);}}
+
   /* 模拟唤醒 FAB（开发用，真机由唤醒词触发） */
   #wakeFab{position:fixed;top:calc(env(safe-area-inset-top,0) + 12px);right:14px;
     z-index:7;width:54px;height:54px;border-radius:50%;border:1px solid rgba(255,200,160,.2);
@@ -124,6 +139,9 @@
     <div id="talkHint">点屏幕任意处可“戳”一下</div>
   </div>
 
+  <!-- 首次打开引导：脉冲提示，首次交互后自动隐藏（不再出现会记到 localStorage） -->
+  <div id="welcomeHint">👋 嗨！按住下面按钮，或戳戳屏幕，跟我说话吧～</div>
+
   <!-- 常驻文字输入入口：位于按住说话上方；语音唤醒时浮于悬浮面板之上 -->
   <div id="textDock">
     <input id="mainText" type="text" placeholder="说点什么…（也可打字）" autocomplete="off" inputmode="text" />
@@ -156,7 +174,7 @@
 
   // ================= 桥接服务配置（接真模型用） =================
   // BASE 留空 = 离线占位模式（用本地 ai.m4a/wo.mp3 + 硬编码文案）。
-  // 填上地址即走真实调用。Evan 提供的桥：http://192.168.31.235:8788 （2026-08-12）
+  // BASE 留空 = 走真实调用（同源经 bridge_proxy 到本机 8787 冻结 Core）；离线占位模式已废弃。
   // ── 真模型客户端：直连本机冻结 Core（8787，Core V2.01 / LS V1.01）──
   // 页面由 bridge_proxy.js 以 https 同源提供，/api/* 由代理转发到本机 8787；
   // ?api=http://host:8787 可覆盖（仅 Mac 本机直接测 8787 时用，手机麦克风需 https）。
@@ -369,10 +387,10 @@
   mainText.addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); sendMainText(); } });
 
   // ---------- 场景B 悬浮对话：真实模型链路（唤醒→聆听→思考→回应） ----------
-  // 已接通桥接服务(http://192.168.31.235:8788)：VAD 仅用于判断"说一句才进思考、不说静静等"，
-  // 真正说话内容走 /v1/transcribe(ASR) → /v1/respond(Core) → /v1/speak(TTS)。
-  // 注：纯 http 下手机浏览器禁麦克风(getUserMedia 需安全上下文)，会自动降级为文字输入，
-  //     文字同样走真实模型；要验真语音需 HTTPS 内网穿透或 Capacitor 安全上下文。
+  // 直连本机冻结 Core(8787)：浏览器端 Web Speech 做 ASR，文字送 /api/chat(Core)，
+  // 回应经 /api/tts(volcano 神经音) 播放；emotion/ignite/crisis 由 Core 返回驱动星云。
+  // 注：纯 http 下手机浏览器禁麦克风(Web Speech 需安全上下文)，走 bridge_proxy 的 https 即解锁真语音；
+  //     不支持语音输入的浏览器(如 iPhone Safari)自动降级为文字输入，文字同样走真实模型。
   const wakePanel=document.getElementById('wakePanel');
   const wakeFill=document.getElementById('wakeTimerFill');
   const wakeReply=document.getElementById('wakeReply');
@@ -437,8 +455,14 @@
       : { status:wakeStatus, reply:wakeReply };
     if(mode==='push') mainCaption.classList.add('show');
     if(mode==='wake') wakeMic.textContent='我在听…';
-    setState(STATE.THINK); ui.status.textContent='思考中…';
+    setState(STATE.THINK);
+    let dotN = 0;
     ui.status.textContent = '我听到：「'+text+'」';
+    // 思考期活动指示：模型要 ~15–23s，用"思考…"动画点避免像卡死
+    const thinkTimer = setInterval(()=>{
+      dotN = (dotN+1)%4;
+      ui.status.textContent = '我听到：「'+text+'」 思考'+'·'.repeat(dotN);
+    }, 360);
     await delay(500);
     let emotion='comfort', ignite=null, replyText='', crisis=false;
     try{
@@ -453,6 +477,7 @@
       if(j.ignite) ignite = j.ignite;
       if(j.crisis) crisis = true;
     }catch(e){ console.warn('[CIRA] /api/chat 失败', e); }
+    clearInterval(thinkTimer);
     lf.setEmotion(emotion); miniLf.setEmotion(emotion);
     if(ignite){ lf.pulse(); miniLf.pulse(); }
     if(crisis) showCrisis();
@@ -513,6 +538,19 @@
 
   // 启动：拉取真模型状态（模型名 / 长期记忆条数 / TTS 模式）
   apiStatus();
+
+  // ---------- 首次打开引导（onboarding） ----------
+  // 新用户给一个脉冲提示，告诉 ta 怎么玩；首次交互即收起，之后不再出现（记到 localStorage）。
+  const welcomeHint = document.getElementById('welcomeHint');
+  function hideWelcome(){ if(welcomeHint) welcomeHint.classList.add('hide'); try{ localStorage.setItem('cira_seen','1'); }catch(_){} }
+  if(welcomeHint && !localStorage.getItem('cira_seen')) welcomeHint.classList.add('show');
+  if(nebula){ nebula.addEventListener('pointerdown', hideWelcome, { once:true }); }
+  talkBtn.addEventListener('pointerdown', hideWelcome, { once:true });
+  sendBtn.addEventListener('click', hideWelcome, { once:true });
+  mainText.addEventListener('focus', hideWelcome, { once:true });
+  document.getElementById('wakeFab').addEventListener('click', hideWelcome, { once:true });
+  // 开场问候脉冲：让星云一上来就"活"着，而不是静止
+  setTimeout(()=>{ try{ lf.pulse(); miniLf.pulse(); }catch(_){} }, 600);
 
   document.addEventListener('gesturestart', e=>e.preventDefault());
 })();
