@@ -8,12 +8,27 @@
 //   （?bridge=/ 让页面走同源代理；证书不受信任时点"高级→继续"即可）
 
 const https = require('https');
+const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 const DIR = __dirname;
 const PORT = parseInt(process.argv[2] || '8443', 10);
-const BRIDGE = 'http://192.168.31.235:8788';
+// 桥地址可由环境变量覆盖：CIRA_BRIDGE=http://127.0.0.1:8000 node bridge_proxy.js
+// 不指定时回退到原局域网真桥（换网络/位置后只需改这个 env，不必改代码）
+const BRIDGE = process.env.CIRA_BRIDGE || 'http://192.168.31.235:8788';
+
+// 取本机首个非回环 IPv4，换网后自动显示新地址，不用手改
+function lanIP(){
+  const ifs = os.networkInterfaces();
+  for(const k of Object.keys(ifs)){
+    for(const a of (ifs[k] || [])){
+      if(a.family === 'IPv4' && !a.internal) return a.address;
+    }
+  }
+  return '127.0.0.1';
+}
 const TLS = {
   key: fs.readFileSync(path.join(DIR, '.tls', 'key.pem')),
   cert: fs.readFileSync(path.join(DIR, '.tls', 'cert.pem')),
@@ -72,7 +87,8 @@ const server = https.createServer(TLS, async (req, res)=>{
 });
 
 server.listen(PORT, '0.0.0.0', ()=>{
+  const ip = lanIP();
   console.log(`[bridge_proxy] https://0.0.0.0:${PORT}  → 桥 ${BRIDGE}`);
-  console.log(`[bridge_proxy] 手机打开: https://192.168.31.33:${PORT}/cira-android.html?bridge=/`);
+  console.log(`[bridge_proxy] 手机打开: https://${ip}:${PORT}/cira-android.html?bridge=/`);
   console.log(`[bridge_proxy] 自签证书不受信任时点"高级→继续"即可（仅本机测试用）`);
 });
