@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <radialGradient id="bgM" cx="50%" cy="50%" r="70%">
+      <stop offset="0%" stop-color="#1A0D08"/>
+      <stop offset="100%" stop-color="#0A060E"/>
+    </radialGradient>
+    <radialGradient id="coreM" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#FFE9C7"/>
+      <stop offset="45%" stop-color="#FFB877"/>
+      <stop offset="100%" stop-color="#FF8A3D" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="haloM" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#FF8A3D" stop-opacity="0.5"/>
+      <stop offset="100%" stop-color="#FF8A3D" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <!-- maskable: 内容限制在中心 80% 安全区, 背景铺满 -->
+  <rect width="512" height="512" fill="#0A060E"/>
+  <circle cx="256" cy="256" r="150" fill="url(#haloM)"/>
+  <circle cx="256" cy="256" r="96" fill="url(#coreM)"/>
+  <g fill="#FFE9C7">
+    <circle cx="218" cy="222" r="2.6"/>
+    <circle cx="296" cy="214" r="2.2"/>
+    <circle cx="312" cy="272" r="2.4"/>
+    <circle cx="226" cy="296" r="2"/>
+    <circle cx="268" cy="312" r="1.8"/>
+    <circle cx="200" cy="262" r="1.8"/>
+  </g>
+</svg>
