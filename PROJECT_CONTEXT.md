@@ -1,6 +1,6 @@
 # CIRA 项目传承文档（PROJECT_CONTEXT）
 
-> **最后更新**：2026-08-14 · **对应定版**：`git tag nebula-1.0`
+> **最后更新**：2026-08-14（真模型联调实测跑通） · **对应定版**：`git tag nebula-1.0`
 > 本文件随代码走，换电脑/换模型/换协作者都能满血接手。改动重大里程碑后必须更新此处并 commit。
 
 ---
@@ -44,10 +44,10 @@
   - 源：`android-proto/cira-android.html` + `android-proto/lifeform.js`
   - 规格：`android-proto/NEBULA_V1_SPEC.md`（参数全冻结）
 - 🟡 **模型集成前端已接通（2026-08-12 晚）**：`android-proto/cira-android.html` 占位逻辑已替换为真实桥接调用 —— `transcribe`(16k PCM)/`respond`(取 display_state.emotion 驱动星云)/`speak`(base64 播放)/`wake_ack`(唤醒音频)/`health`(启动自检) 全通；含双降级（BASE 为空=离线占位；桥不可达=文字输入/系统 TTS）。附 `android-proto/mock_bridge.js`（零依赖本地桥，自测全绿）供联调。
-  - **真实地址已填**：`BRIDGE.BASE = http://192.168.31.235:8788`（Evan 提供，2026-08-12）。WorkBuddy 侧 Mac(192.168.31.33) 与该桥机网络隔离、连不到，需用户在**小米15**（与桥同局域网）实机验证。未确认项暂按需求文档默认（无鉴权 / 裸 16k PCM / 非流式），联调报错再对应切 `AUTH` / `TRANSCRIBE_WAV` / `USE_STREAM`。端点/字段需与 `docs/CIRA_APP_INTEGRATION_REQUIREMENTS.md` 对齐。
+  - **真模型就在本机 Mac（非远程桥）**：调的是冻结 Core V2.01 / LS V1.01（`engine/cira.CIRA`，即 `2026-07-28-21-39-04/engine/server.py` 那套），不是后来那套 `/v1/*` 桥接层。启动方式：在 `2026-07-28-21-39-04/` 跑 `bash .start.sh`（读同目录 `.env` 的 MiMo key，用隔离 venv python），监听 `0.0.0.0:8787`。实测：`provider=openai`(mimo-v2.5-pro + 快模型)、`tts=volcano`(vivi2.0 神经音 mp3)、`asr=volcano` 就绪、**80 条长期记忆已加载**。`/api/*` 契约：`GET /api/status`、`POST /api/chat`{text,age,channel,voice_meta,session_id}→{response,emotion(英文字符串),ignite,crisis,debug}、`POST /api/tts`{text}→{provider,format,audio:base64 mp3}、`POST /api/reset`。前端 `android-proto/cira-android.html` 现已**直接对接本机 8787 的 `/api/*`**（默认 `API_BASE=''` 经代理同源），不再走 235 桥 / `/v1/*` / mock。
   - **空壳问题已修（2026-08-12 深夜）**：原场景A「按住说话」按钮是**无模型的空心状态动画**（固定 思考1s→回应1.8s），被用户识破。已改为：该按钮触发真实对话轮（文字降级）→ 真实 `transcribe→respond→speak`；并在流转中回显 **「我听到：<你说的话>」** + 模型回复文字，证明真的听进去了、有实际回应。状态切换改为由真实模型延迟驱动，不再用固定 setTimeout 假动画。
-  - **真语音测试通道（https 代理）**：纯 http 下手机浏览器禁 `getUserMedia`（需安全上下文），故小米上只能打字、验不到真 ASR。已加 `android-proto/bridge_proxy.js`——本机 https(:8443) 提供页面 + 把 `/v1/*` 在 Mac 内部转发到 http 桥（同源、避开混内容拦截）。手机打开 `https://192.168.31.33:8443/cira-android.html?bridge=/`，接受自签证书后即解锁麦克风，可验 **说话→ASR→星云变色→语音回应** 全链路。自签证书在 `.tls/`（已 gitignore，需用时本地 openssl 重生成）。
-- 🟡 **联调可移植性 / 随时切换桥（2026-08-14）**：Mac 换网络后原 `192.168.31.33` 失效、且与家里桥机 `192.168.31.235`（本地模型）跨网段不可达。改造 `bridge_proxy.js`：桥地址解析优先级 = 环境变量 `CIRA_BRIDGE` > 同目录 `bridge_target.txt`（一行 URL）> 默认真桥；启动日志用 `lanIP()` 动态显示本机新 IP，不再写死。最终方案：给家里桥机做**内网穿透**（Cloudflare Tunnel 固定公网地址最省事），Mac 把该地址填进 `bridge_target.txt` 即"到哪都连真模型"，无需改代码/记命令。已附 `bridge_target.txt.example`；`bridge_target.txt` 含真实地址故 gitignore。当前 Mac 端临时用 `mock_bridge.js`(:8000) 演示（**非真模型**，仅验证交互流程）。
+  - **真语音测试通道（https 代理）**：纯 http 下手机浏览器禁 `getUserMedia`（需安全上下文），故小米上只能打字、验不到真 ASR。已加 `android-proto/bridge_proxy.js`——本机 https(:8443) 提供页面 + 把 `/api/*`（及兼容 `/v1/*`）在 Mac 内部转发到 `127.0.0.1:8787`（同源、避开混内容拦截）。手机打开 `https://<本机LAN IP>:8443/cira-android.html?bridge=/`（启动日志自动打印该地址），接受自签证书后即解锁麦克风，可验 **说话(Web Speech ASR)→/api/chat→星云变色(emotion)→/api/tts 语音回应** 全链路。ASR 在浏览器端做（Web Speech API zh-CN），后端只收文字。自签证书在 `.tls/`（已 gitignore，需用时本地 openssl 重生成）。
+- 🟡 **联调可移植性 / 桥地址解析（2026-08-14）**：`bridge_proxy.js` 桥地址解析优先级 = 环境变量 `CIRA_BRIDGE` > 同目录 `bridge_target.txt`（一行 URL）> 默认 `http://127.0.0.1:8787`（本机真模型）。启动日志用 `lanIP()` 动态打印本机新 LAN IP，换网络不用手改。**2026-08-14 实测跑通**：真模型就在本机 8787，无需内网穿透/远程桥，默认真桥即可。先前规划的"家里桥机 Cloudflare Tunnel"方案已不再需要（模型与本机同源）。`mock_bridge.js`(:8000/现 8123) 仅作离线演示保留，勿与真模型混淆。
 - ⏸️ **硬件**：ST77916 黑屏根因已定位（QPI→标准 SPI 8-bit），修复已 commit 未 push；Mac 崩溃阻断验证。
 
 ---
@@ -63,8 +63,8 @@
 
 ## 六、下一步
 
-1. ✅ **桥接服务已就绪 + 地址已填**：`BRIDGE.BASE = http://192.168.31.235:8788`。WorkBuddy 侧 Mac 与桥机网络隔离连不到，待 Evan 在小米15 实机联调。
-2. **（进行中）模型端到端联调**：填真实地址后在手机实测 `transcribe→respond→speak` 全链路（麦克风权限需 https 或 Capacitor 安全上下文；纯 http 局域网下浏览器麦克风会被拦，走 `wakeMore` 文字降级）。验证延迟/兜底后封 Capacitor APK。
+1. ✅ **真模型联调实测跑通（2026-08-14）**：本机 `8787` 冻结 Core 已由 `.start.sh` 拉起，`android-proto/cira-android.html` 经 `bridge_proxy.js`(:8443) 直接调 `/api/chat`+`/api/tts` 真链路。手机实测地址 `https://<本机LAN IP>:8443/cira-android.html?bridge=/`（麦克风/语音需 https，iPhone Safari 仅支持朗读不支持语音输入）。本机 playground 直开 `http://localhost:8787`。
+2. **（进行中）交互/UX 升级**：模型联调已通，焦点回到用户真实诉求——升级交互与用户体验。待 Evan 指定优先打磨的 UX 方向（如：唤醒/聆听/回应动效手感、儿童话术与情绪映射、危机与安全协议呈现、首屏引导、延迟体感优化等）。
 3. **封 Capacitor**：前端（本原型）+ 原生模块（唤醒词/悬浮窗/VAD/ASR/TTS/Core-LS 调用）。
 4. **硬件恢复**（可选）：Windows 笔记本或 USB-TTL 适配器到位后，续烧录验证。
 
@@ -80,4 +80,4 @@
 
 ---
 
-*变更记录：2026-08-12 新增本项目传承文档；冻结星云交互 v1.0（NEBULA_V1_SPEC.md + git tag nebula-1.0）；集成需求 status 归属改为 App 自管（采纳用户建议）。2026-08-12 深夜 `BRIDGE.BASE` 填入真实桥 `http://192.168.31.235:8788`，并修「按住说话」空心演示→真实模型链路 + 回显「我听到」+ 新增 `bridge_proxy.js` 解锁手机真语音。2026-08-13 凌晨修复交互逻辑串路 bug：把「按住说话」(场景A 主动对话) 与「语音唤醒」(场景B 说"哎/我在"+连续听) 彻底拆成两条独立路径（`convMode`/`recording` 标志 + `runTurn(mode)`/`endPushTurn()`），按住说话不再误触发唤醒词招呼、按下即录音松手才发模型。2026-08-14 联调可移植性改造：`bridge_proxy.js` 桥地址改由 `CIRA_BRIDGE` 环境变量 / `bridge_target.txt`（一行）覆盖，默认回退真桥；启动日志动态打印本机新局域网 IP；规划「家里桥机内网穿透固定公网地址」实现随时切换网络都能调真模型，并附 `bridge_target.txt.example`。*
+*变更记录：2026-08-12 新增本项目传承文档；冻结星云交互 v1.0（NEBULA_V1_SPEC.md + git tag nebula-1.0）；集成需求 status 归属改为 App 自管（采纳用户建议）。2026-08-12 深夜 `BRIDGE.BASE` 填入真实桥 `http://192.168.31.235:8788`，并修「按住说话」空心演示→真实模型链路 + 回显「我听到」+ 新增 `bridge_proxy.js` 解锁手机真语音。2026-08-13 凌晨修复交互逻辑串路 bug：把「按住说话」(场景A 主动对话) 与「语音唤醒」(场景B 说"哎/我在"+连续听) 彻底拆成两条独立路径（`convMode`/`recording` 标志 + `runTurn(mode)`/`endPushTurn()`），按住说话不再误触发唤醒词招呼、按下即录音松手才发模型。2026-08-14 联调可移植性改造：`bridge_proxy.js` 桥地址改由 `CIRA_BRIDGE` 环境变量 / `bridge_target.txt`（一行）覆盖，默认回退本机真桥 `127.0.0.1:8787`；启动日志动态打印本机新局域网 IP，并附 `bridge_target.txt.example`。**2026-08-14 实测跑通真模型联调**：澄清"真模型一直在本机 Mac 8787 冻结 Core（非 235 桥 / 非 /v1/* 层）"，由 `2026-07-28-21-39-04/.start.sh` 拉起 `engine.server`；前端 `cira-android.html` 模型层由"235 桥 /v1/*"重写为直接对接本机 8787 的 `/api/chat`+`/api/tts`+`/api/status`（Web Speech 浏览器端 ASR + volcano 神经 TTS），emotion 驱动星云、ignite 触发 pulse、crisis 弹横幅；`bridge_proxy.js`(:8443) 转发 `/api/*` 到 8787 供手机 https 真语音验。原"家里桥机 Cloudflare 内网穿透"方案因模型本机同源而作废。*

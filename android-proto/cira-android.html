@@ -157,31 +157,33 @@
   // ================= 桥接服务配置（接真模型用） =================
   // BASE 留空 = 离线占位模式（用本地 ai.m4a/wo.mp3 + 硬编码文案）。
   // 填上地址即走真实调用。Evan 提供的桥：http://192.168.31.235:8788 （2026-08-12）
-  // 没确认的项先按需求文档默认假设，联调报错再对应切换：
-  //   AUTH           —— 暂留空（对端无鉴权）
-  //   TRANSCRIBE_WAV —— false=发裸 16-bit/16k/mono PCM；若对端收 wav 容器改 true
-  //   USE_STREAM     —— false=非流式 /v1/respond；若对端实现 respond_stream 改 true
-  // BASE 可用 URL 参数覆盖：?bridge=/ 走同源 https 代理（手机验真语音用，见 bridge_proxy.js）
-  const _qb = new URLSearchParams(location.search).get('bridge');
-  const BRIDGE = {
-    BASE: _qb || 'http://192.168.31.235:8788',
-    AUTH: '',                 // 若桥需鉴权填 'Bearer xxxxx'，否则留空
-    TIMEOUT_MS: { transcribe: 15000, respond: 12000, speak: 12000, wake: 6000, health: 4000 },
-    TRANSCRIBE_WAV: false,    // true=桥收 wav 容器；false=收裸 16-bit/16k/mono PCM
-    USE_STREAM: false,        // true=用 /v1/respond_stream（若对端实现）
-  };
-  const USE_BRIDGE = !!BRIDGE.BASE;
-  function bridgeURL(p){ return BRIDGE.BASE.replace(/\/+$/,'') + p; }
-  async function bridgeFetch(path, opts){
-    const headers = Object.assign({}, (opts && opts.headers) || {});
-    if(BRIDGE.AUTH) headers['Authorization'] = BRIDGE.AUTH;
+  // ── 真模型客户端：直连本机冻结 Core（8787，Core V2.01 / LS V1.01）──
+  // 页面由 bridge_proxy.js 以 https 同源提供，/api/* 由代理转发到本机 8787；
+  // ?api=http://host:8787 可覆盖（仅 Mac 本机直接测 8787 时用，手机麦克风需 https）。
+  const _apiOverride = new URLSearchParams(location.search).get('api');
+  const API_BASE = _apiOverride || '';          // 默认同源（经代理到 8787）
+  const CHILD_AGE = parseInt(new URLSearchParams(location.search).get('age')) || 8;
+  let TTS_NEURAL = true;                          // 由 /api/status 的 tts_browser_mode 决定
+  let MODEL_NAME = '';
+  const USE_API = true;                           // 真模型常驻本机
+  async function apiFetch(path, opts){
     const ctrl = new AbortController();
-    const tid = setTimeout(()=>ctrl.abort(), (opts && opts.timeout) || 10000);
+    const tid = setTimeout(()=>ctrl.abort(), (opts && opts.timeout) || 15000);
     try{
-      const r = await fetch(bridgeURL(path), Object.assign({}, opts, { headers, signal: ctrl.signal }));
+      const r = await fetch(API_BASE + path, Object.assign({}, opts, { signal: ctrl.signal }));
       if(!r.ok) throw new Error('HTTP '+r.status);
       return r;
     } finally { clearTimeout(tid); }
+  }
+  async function apiStatus(){
+    try{
+      const r = await apiFetch('/api/status', { method:'GET', timeout: 5000 });
+      const j = await r.json();
+      // tts_browser_mode=false → 后端神经 TTS(/api/tts)；true → 浏览器朗读兜底
+      TTS_NEURAL = (j.tts_browser_mode !== true);
+      MODEL_NAME = j.model || '';
+      console.log('[CIRA] 真模型就绪:', (j.provider||'')+' / '+(j.model||''), '· 长期记忆', j.memories, '条');
+    }catch(e){ console.warn('[CIRA] /api/status 不可达', e); }
   }
 
   // 会话：每设备一个 UUID，持久化在多轮记忆里
@@ -189,16 +191,6 @@
   if(!SESSION_ID){
     SESSION_ID = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : ('sess_'+Date.now()+'_'+Math.random().toString(36).slice(2));
     try{ localStorage.setItem('cira_session_id', SESSION_ID); }catch(e){}
-  }
-  let bridgeReady = false;
-  async function checkBridge(){
-    if(!USE_BRIDGE) return false;
-    try{
-      const r = await bridgeFetch('/v1/health', { method:'GET', timeout: BRIDGE.TIMEOUT_MS.health });
-      const j = await r.json();
-      bridgeReady = !!(j && j.core_ready !== false);
-    }catch(e){ bridgeReady = false; }
-    return bridgeReady;
   }
 
   // ---- 音频：base64 → 播放 ----
@@ -233,59 +225,55 @@
   }
 
   // ---- 麦克风 PCM 采集（16-bit / 16k / 单声道） ----
-  let audioCtx = null, scriptNode = null, micChunks = [];
-  function resampleFloat(chunks, fromRate, toRate){
-    let total = 0; for(const c of chunks) total += c.length;
-    const all = new Float32Array(total); let off = 0;
-    for(const c of chunks){ all.set(c, off); off += c.length; }
-    if(fromRate === toRate || !fromRate) return all;
-    const ratio = fromRate / toRate;
-    const outLen = Math.floor(all.length / ratio);
-    const out = new Float32Array(outLen);
-    for(let i=0;i<outLen;i++){
-      const idx = i*ratio, i0 = Math.floor(idx), frac = idx-i0, i1 = Math.min(i0+1, all.length-1);
-      out[i] = all[i0]*(1-frac) + all[i1]*frac;
-    }
-    return out;
-  }
-  function floatToPCM16(f32){
-    const out = new Int16Array(f32.length);
-    for(let i=0;i<f32.length;i++){ let s = Math.max(-1, Math.min(1, f32[i])); out[i] = s<0 ? s*0x8000 : s*0x7FFF; }
-    return out;
-  }
-  function makeWavBlob(pcmInt16){
-    const sr = 16000, dataSize = pcmInt16.byteLength;
-    const buf = new ArrayBuffer(44 + dataSize); const dv = new DataView(buf);
-    const ws = (o,s)=>{ for(let i=0;i<s.length;i++) dv.setUint8(o+i, s.charCodeAt(i)); };
-    ws(0,'RIFF'); dv.setUint32(4, 36+dataSize, true); ws(8,'WAVE'); ws(12,'fmt ');
-    dv.setUint32(16,16,true); dv.setUint16(20,1,true); dv.setUint16(22,1,true);
-    dv.setUint32(24,sr,true); dv.setUint32(28,sr*2,true); dv.setUint16(32,2,true); dv.setUint16(34,16,true);
-    ws(36,'data'); dv.setUint32(40,dataSize,true);
-    new Uint8Array(buf,44).set(new Uint8Array(pcmInt16.buffer));
-    return new Blob([buf], { type:'audio/wav' });
-  }
-  function flushPCM(){
-    const f32 = resampleFloat(micChunks, audioCtx ? audioCtx.sampleRate : 48000, 16000);
-    micChunks = [];
-    const pcm = floatToPCM16(f32);
-    return BRIDGE.TRANSCRIBE_WAV ? makeWavBlob(pcm) : new Blob([pcm.buffer], { type:'application/octet-stream' });
-  }
-
-  // ---- ASR 不可用时的文字输入降级 ----
-  function askTextFallback(){
-    return new Promise(res=>{
-      let inp = document.getElementById('wakeText');
-      if(!inp){
-        inp = document.createElement('input');
-        inp.id = 'wakeText'; inp.placeholder = '语音没识别出来，打字也行…';
-        inp.style.cssText = 'position:absolute;left:12px;right:12px;bottom:54px;padding:10px 12px;border-radius:10px;border:1px solid #ff9eb5;background:#1a1020;color:#fff;font-size:15px;';
-        wakePanel.appendChild(inp);
+  // ---- 语音输入：浏览器端 Web Speech API 做 ASR，结果送 /api/chat ----
+  // 注意：Web Speech API 需安全上下文（https 或 localhost），手机走 bridge_proxy 的 https 即可。
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let recognizer = null, recognizing = false;
+  let finalTranscript = '', interimTranscript = '';
+  let recChannel = 'voice';     // 本次识别的来源频道（voice=语音 / text=文字）
+  function buildRecognizer(){
+    if(!SR) return null;
+    const rec = new SR();
+    rec.lang = 'zh-CN';
+    rec.continuous = false;
+    rec.interimResults = true;
+    rec.onstart = ()=>{ recognizing = true; lf.setAudioLevel(0.85); };
+    rec.onresult = (e)=>{
+      interimTranscript = '';
+      for(let i=e.resultIndex; i<e.results.length; i++){
+        const res = e.results[i];
+        if(res.isFinal) finalTranscript += res[0].transcript;
+        else interimTranscript += res[0].transcript;
       }
-      inp.style.display = 'block'; inp.value = ''; inp.focus();
-      const done = ()=>{ inp.style.display='none'; inp.removeEventListener('keydown', onKey); res(inp.value.trim() || null); };
-      const onKey = (e)=>{ if(e.key === 'Enter') done(); };
-      inp.addEventListener('keydown', onKey);
-    });
+      // 实时把临时识别显示到主屏气泡，给"正在听"的反馈（唤醒态不抢浮层面板）
+      if(!wakeActive){
+        mainCaption.classList.add('show');
+        mcStatus.textContent = '我在听…「' + (finalTranscript + interimTranscript) + '」';
+      }
+    };
+    rec.onerror = (e)=>{ console.warn('[CIRA] SR error:', e.error); };
+    rec.onend = ()=>{
+      recognizing = false; lf.setAudioLevel(0.3);
+      const txt = (finalTranscript + interimTranscript).trim();
+      finalTranscript = ''; interimTranscript = '';
+      if(txt) onSpeechFinal(txt);
+    };
+    return rec;
+  }
+  function startRecognizer(channel){
+    if(!SR) return false;
+    recChannel = channel;
+    if(!recognizer) recognizer = buildRecognizer();
+    if(recognizing) return true;
+    try{ recognizer.start(); }catch(_){ return false; }
+    return true;
+  }
+  function stopRecognizer(){ if(recognizer && recognizing){ try{ recognizer.stop(); }catch(_){} } }
+  // 语音识别到一句完整的话 → 路由到对应模式
+  function onSpeechFinal(text){
+    if(turnBusy) return;
+    if(wakeActive) runTurnFromText(text, 'wake', { voice:true });
+    else runTurnFromText(text, 'push', { voice:true });
   }
 
   // ---------- 光生命体引擎 (与 v0.7 同款) ----------
@@ -334,41 +322,40 @@
   nebula.addEventListener('pointerleave', endTouch);
 
   // ---------- 按住说话（场景A：主动对话，绝不说“哎/我在”） ----------
-  // 按住=录音；松手=把录到的音频送 ASR→Core→TTS。与场景B“语音唤醒”完全独立。
+  // 按住=开始语音识别；松手=停止识别，识别到一句话即送 /api/chat。与场景B“语音唤醒”完全独立。
   const talkBtn=document.getElementById('talkBtn');
   const mainCaption=document.getElementById('mainCaption');
   const mcStatus=mainCaption.querySelector('.mc-status');
   const mcReply=mainCaption.querySelector('.mc-reply');
   const mainText=document.getElementById('mainText');
   const sendBtn=document.getElementById('sendBtn');
+  if(!SR){                                            // 浏览器不支持语音输入（如 iPhone Safari）
+    talkBtn.style.display='none';
+    mainCaption.classList.add('show');
+    mcStatus.textContent='当前浏览器不支持语音输入，请直接打字（CIRA 仍会朗读回应）';
+  }
   function startTalk(){
-    if(convMode==='push' && recording) return;       // 已在按住中，忽略重复触发
-    if(wakeActive) hideWake();                        // 若悬浮面板开着(之前唤醒)，切主屏对话先收起它
-    if(wakeTick){ clearInterval(wakeTick); wakeTick=null; }  // 若之前在唤醒连续听，先停掉
+    if(!SR) return;
+    if(turnBusy) return;
+    if(wakeActive) hideWake();                        // 若悬浮面板开着，切主屏对话先收起它
+    convMode='push';
     setState(STATE.LISTEN);
-    lf.setAudioLevel(0.7);
     talkBtn.classList.add('listening');
     talkBtn.innerHTML='聆听<br>中…';
-    convMode='push';
-    if(!micStream) startMic();                       // 开始录音(按住期间持续采集)
-    recording=true;
-    // 结果展示在主屏气泡(悬浮面板仅语音唤醒时出现，与按住说话无关)
     mainCaption.classList.add('show');
     mcStatus.textContent='我在听…（说完松手发送）';
     mcReply.textContent='';
+    startRecognizer('voice');                         // 开始浏览器端语音识别
   }
   function endTalk(){
     talkBtn.classList.remove('listening');
     talkBtn.innerHTML='按住<br>说话';
-    lf.setAudioLevel(0.3);
-    if(convMode!=='push') return;                     // 仅“按住说话”路径走此释放逻辑
-    recording=false;                                  // 停止采集，保留已录缓冲
-    runTurn('push');                                  // 直接走真实模型链路，不触发唤醒词招呼
+    if(convMode!=='push') return;
+    stopRecognizer();                                // 停止识别→onend 拿到整句→跑真实模型
   }
   talkBtn.addEventListener('pointerdown', e=>{e.preventDefault(); startTalk();});
   talkBtn.addEventListener('pointerup', endTalk);
   talkBtn.addEventListener('pointercancel', endTalk);
-  talkBtn.addEventListener('pointerleave', e=>{ if(state===STATE.LISTEN) endTalk(); });
 
   // ---------- 常驻文字框：直接提交跑真实模型（独立于麦克风） ----------
   function sendMainText(){
@@ -395,204 +382,102 @@
   const sndAi=document.getElementById('sndAi');
   const sndWo=document.getElementById('sndWo');
 
-  let wakeActive=false;                 // 悬浮是否激活(替代旧的 state===WAKE 判断)
-  let convMode=null;                    // 'push'=场景A按住说话主动对话；'wake'=场景B语音唤醒连续听
-  let recording=false;                 // 麦克风是否在采集(按住期间 true；唤醒模式持续 true)
-  let micStream=null, analyser=null, micData=null, vadRAF=null;
-  let vadLevel=0;                       // 当前音量 0..1(驱动 VAD)
-  let usingRealMic=false, fallbackBound=false;
-  let speaking=false, heardAny=false;   // 本轮回合：是否在收录中 / 是否曾检测到人声
-  let silentStart=0;                    // 最近一次静默起点(用于句尾判定)
-  let wakeTick=null;
-  let wakePhase='listen';               // listen / think / speak
-  let wakeStart=0;                       // 本轮唤醒起始时刻(初始静默超时基准)
+  let wakeActive=false;                 // 悬浮是否激活
+  let convMode=null;                    // 'push'=场景A按住说话；'wake'=场景B语音唤醒
+  let turnBusy=false;                   // 防一轮重复触发
+  let currentChannel='voice';          // 当前回合输入频道（runTurnFromText 设置）
+  let wakePhase='idle';                 // idle / listen / think / speak
 
-  const VAD_THRESHOLD = 0.06;           // 归一化 RMS 阈值(有无人声)
-  const SILENCE_MS    = 1800;           // 句尾静默判定(说完后静默多久算一句说完)
-  const INIT_SILENCE  = 6000;           // 初始静默超时(唤醒后一直无人开口才退出)
-  const REPLY_PHRASES = ['我在听呢','你想说什么？','嗯，我明白','好的，接着说'];
-
-  function startMic(){
-    if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){ fallbackMic(); return; }
-    navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}}).then(stream=>{
-      micStream=stream; usingRealMic=true;
-      const AC=window.AudioContext||window.webkitAudioContext;
-      audioCtx=new AC();
-      if(audioCtx.state==='suspended') audioCtx.resume();
-      const src=audioCtx.createMediaStreamSource(stream);
-      const silentGain=audioCtx.createGain(); silentGain.gain.value=0;   // 静音，避免麦克风回放
-      scriptNode=audioCtx.createScriptProcessor(4096,1,1);
-      micChunks=[];
-      scriptNode.onaudioprocess=(e)=>{
-        if(!recording) return;                        // 仅录音中才累积(按住期间/唤醒连续听)
-        const ch=e.inputBuffer.getChannelData(0);
-        micChunks.push(new Float32Array(ch));          // 累积原始采样，句尾送 ASR
-        let sum=0; for(let i=0;i<ch.length;i++){ const v=ch[i]; sum+=v*v; }
-        vadLevel=Math.min(1, Math.sqrt(sum/ch.length)*3.2);   // VAD 能量
-        lf.setAudioLevel(0.3 + vadLevel*0.7);
-      };
-      src.connect(scriptNode); scriptNode.connect(silentGain); silentGain.connect(audioCtx.destination);
-      wakeMic.textContent='麦克风已开启 · 说话试试';
-    }).catch(()=>{ fallbackMic(); });
-  }
-  // 降级：局域网 http 通常不是安全上下文，getUserMedia 拿不到权限 → 用"按住说话"模拟
-  function fallbackMic(){
-    usingRealMic=false; wakeMic.textContent='麦克风不可用(需HTTPS/App)· 请打字或按“按住说话”';
-    wakeMore.textContent='按住说话'; wakeMore.classList.add('hold');
-    if(!fallbackBound){
-      fallbackBound=true;
-      wakeMore.addEventListener('pointerdown', e=>{ e.preventDefault(); vadLevel=0.9; });
-      const release=()=>{ vadLevel=0; };
-      wakeMore.addEventListener('pointerup', release);
-      wakeMore.addEventListener('pointercancel', release);
-      wakeMore.addEventListener('pointerleave', release);
-    }
-  }
-  function keepListening(){            // 真实麦模式：点"继续说"续命(重置初始静默)
+  // 语音识别改由浏览器端 Web Speech API 完成（见 buildRecognizer，上方），不再用 PCM 采集 + VAD；
+  // 本机 8787 冻结 Core 只收文字。
+  function keepListening(){            // 唤醒态：重新开始聆听（Web Speech onend 自然句尾驱动）
     if(!wakeActive) return;
-    startWakeTick();
     wakeStatus.textContent='继续聆听…';
+    startRecognizer('voice');
   }
 
   function triggerWake(){
     if(wakeActive){ keepListening(); return; }
     wakeActive=true;
     document.body.classList.add('wake-on');   // 标记唤醒态：文字框浮于悬浮面板之上
-    convMode='wake';                   // 标记这是“语音唤醒”路径(说“哎/我在”+连续听)
+    convMode='wake';                   // “语音唤醒”路径(说“哎/我在”+连续听)
     setState(STATE.LISTEN);            // 唤醒即进入聆听子状态
     wakePanel.classList.add('show');
-    speaking=false; heardAny=false; wakePhase='listen';
+    wakePhase='listen';
     const which = Math.random()<0.5 ? 'ai' : 'wo';
     wakeReply.textContent = which==='ai' ? '哎' : '我在';
     wakeStatus.textContent='正在聆听…';
-    // 唤醒应答音频：优先桥，失败用本地
-    if(USE_BRIDGE){
-      bridgeFetch('/v1/wake_ack?which='+which, { method:'GET', timeout: BRIDGE.TIMEOUT_MS.wake })
-        .then(r=>r.json()).then(j=>{ if(j && j.audio) playAudio(j.audio, j.format||'mp3'); })
-        .catch(()=>{ const a=which==='ai'?sndAi:sndWo; a.currentTime=0; a.play().catch(()=>{}); });
-    }else{
-      const a=which==='ai'?sndAi:sndWo; a.currentTime=0; a.play().catch(()=>{});
-    }
-    startMic();
-    startWakeTick();
-  }
-  function startWakeTick(){
-    if(wakeTick) clearInterval(wakeTick);
-    wakeStart=performance.now(); silentStart=wakeStart;
-    wakeTick=setInterval(()=>{
-      const now=performance.now();
-      const active=vadLevel>VAD_THRESHOLD;
-      if(active){
-        heardAny=true; speaking=true; silentStart=now;
-        if(wakePhase==='listen') wakeStatus.textContent='我在听…';
-      } else if(speaking && now-silentStart>SILENCE_MS){
-        runTurn('wake'); return;           // 句尾→思考/回应（真实模型链路）
-      }
-      // 进度条：有人声=涨满；静默=按剩余静默预算回落；没人开口过=按初始预算
-      const budget=heardAny?SILENCE_MS:INIT_SILENCE;
-      const el=heardAny?(now-silentStart):(now-wakeStart);
-      wakeFill.style.transform=`scaleX(${Math.max(0,1-el/budget)})`;
-      if(!heardAny && now-wakeStart>INIT_SILENCE) hideWake();
-    },60);
+    wakeMic.textContent='对着手机说话试试';
+    // 唤醒应答：本地音频资产（无服务端 wake 端点）
+    const a=which==='ai'?sndAi:sndWo; if(a){ a.currentTime=0; a.play().catch(()=>{}); }
+    startRecognizer('voice');          // 开始连续聆听；onend→onSpeechFinal→runTurnFromText('wake')
   }
   const delay = ms => new Promise(r=>setTimeout(r, ms));
-  let turnBusy = false;
-  async function runTurn(mode){
-    if(turnBusy) return;                    // 防止 VAD 静默 + 按钮释放重复触发同一轮
-    turnBusy = true;
-    const ui = (mode==='push')                         // 显示目标：按住说话→主屏气泡；唤醒→悬浮面板
-      ? { status:mcStatus, reply:mcReply }
-      : { status:wakeStatus, reply:wakeReply };
-    speaking=false; wakePhase='think';
-    if(wakeTick){ clearInterval(wakeTick); wakeTick=null; }
-    setState(STATE.THINK); ui.status.textContent='思考中…';
-
-    // 1) 取用户说的话：真实麦克风 ASR，或文字降级（http 下麦克风不可用）
-    let text=null;
-    if(usingRealMic && USE_BRIDGE){
-      try{
-        const pcmBlob = flushPCM();
-        const r = await bridgeFetch('/v1/transcribe', { method:'POST', body:pcmBlob,
-          headers:{'Content-Type': BRIDGE.TRANSCRIBE_WAV?'audio/wav':'application/octet-stream'},
-          timeout: BRIDGE.TIMEOUT_MS.transcribe });
-        const j = await r.json();
-        if(j && j.asr_available && j.text) text = j.text;
-      }catch(e){ console.warn('[CIRA] transcribe fail', e); }
-    } else if(USE_BRIDGE){
-      text = await askTextFallback();        // 无麦克风权限 → 文字输入（仍走真实模型）
-    }
-
-    if(!text){                              // 没拿到任何输入：不假装回复，明确告知回到聆听
-      ui.status.textContent='没听清，再说一次～';
-      await delay(1200); turnBusy=false;
-      if(mode==='wake') backToListen(); else endPushTurn();   // 唤醒=连续听；按住说话=回就绪
-      return;
-    }
-    await runTurnCore(text, mode, ui);
-  }
   // 常驻文字框直接提交：已有文本，跳过 ASR/输入弹窗，直接跑真实模型
-  async function runTurnFromText(text, mode){
+  function showCrisis(){
+    let b=document.getElementById('crisisBanner');
+    if(!b){
+      b=document.createElement('div'); b.id='crisisBanner';
+      b.style.cssText='position:fixed;left:12px;right:12px;top:12px;z-index:50;background:#fdeaea;color:#d64545;border:1px solid #f3c6c6;border-radius:12px;padding:12px 16px;font-size:13.5px;line-height:1.6;';
+      document.body.appendChild(b);
+    }
+    b.innerHTML='⚠️ <b>安全协议已触发</b>（高风险信号）。真实产品中此刻会立即通知家长。危机资源：110 / 120 / 全国24小时心理援助热线 12356';
+    b.style.display='block';
+    setTimeout(()=>{ b.style.display='none'; }, 8000);
+  }
+
+  // 文字/语音统一入口：已拿到文本，跳过 ASR，直接跑真实模型
+  async function runTurnFromText(text, mode, opts){
     if(turnBusy) return;
     turnBusy = true;
+    opts = opts || {};
+    currentChannel = opts.voice ? 'voice' : 'text';
     const ui = (mode==='push')
       ? { status:mcStatus, reply:mcReply }
       : { status:wakeStatus, reply:wakeReply };
-    if(mode==='push') mainCaption.classList.add('show');   // 主屏对话：确保气泡可见
-    speaking=false; wakePhase='think';
-    if(wakeTick){ clearInterval(wakeTick); wakeTick=null; }
+    if(mode==='push') mainCaption.classList.add('show');
+    if(mode==='wake') wakeMic.textContent='我在听…';
     setState(STATE.THINK); ui.status.textContent='思考中…';
-    await runTurnCore(text, mode, ui);
-  }
-  async function runTurnCore(text, mode, ui){
-    // 2) 回显“我听到你说：…”，证明真的听进去了（解决“不知道听没听到”）
     ui.status.textContent = '我听到：「'+text+'」';
-    await delay(650);
-
-    // 3) Core 回应：emotion/ignite 取桥的 display_state（权威），status 由 App 自管
-    let emotion='comfort', ignite=null, replyText='';
-    if(USE_BRIDGE){
-      try{
-        const r = await bridgeFetch('/v1/respond', { method:'POST',
-          headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({ schema:'child-input@1', text, speaker:'child', child_age:0,
-            channel:'voice', history:'', voice_meta:null, session_id:SESSION_ID }),
-          timeout: BRIDGE.TIMEOUT_MS.respond });
-        const j = await r.json();
-        const ds = j && j.display_state;
-        if(ds){ if(ds.emotion) emotion=ds.emotion; if('ignite' in ds) ignite=ds.ignite; }
-        else if(j && j.emotion) emotion=j.emotion;
-        if(j && j.text) replyText = j.text;
-      }catch(e){ console.warn('[CIRA] respond fail', e); }
-    } else {                                // 离线占位
-      replyText = REPLY_PHRASES[Math.floor(Math.random()*REPLY_PHRASES.length)];
-    }
+    await delay(500);
+    let emotion='comfort', ignite=null, replyText='', crisis=false;
+    try{
+      const r = await apiFetch('/api/chat', { method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ text, age: CHILD_AGE, channel: currentChannel,
+          voice_meta: opts.voice ? { source:'web-speech-api' } : {}, session_id: SESSION_ID }),
+        timeout: 30000 });
+      const j = await r.json();
+      if(j.response) replyText = j.response;
+      if(j.emotion) emotion = j.emotion;
+      if(j.ignite) ignite = j.ignite;
+      if(j.crisis) crisis = true;
+    }catch(e){ console.warn('[CIRA] /api/chat 失败', e); }
     lf.setEmotion(emotion); miniLf.setEmotion(emotion);
-    if(ignite){ lf.pulse(); miniLf.pulse(); }   // Core 标记 ignite：炸开式点亮
-
-    // 4) TTS 播放（同时回显模型回复文字，解决“没有实际回应”的空壳感）
+    if(ignite){ lf.pulse(); miniLf.pulse(); }
+    if(crisis) showCrisis();
     wakePhase='speak'; setState(STATE.SPEAK);
     ui.reply.textContent = replyText || text;
     ui.status.textContent = '回应中…';
     let ok=false;
-    if(USE_BRIDGE){
+    if(TTS_NEURAL && replyText){
       try{
-        const r = await bridgeFetch('/v1/speak', { method:'POST',
+        const r = await apiFetch('/api/tts', { method:'POST',
           headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({ schema:'response-package@1', text: replyText||text, emotion }),
-          timeout: BRIDGE.TIMEOUT_MS.speak });
+          body: JSON.stringify({ text: replyText }), timeout: 15000 });
         const j = await r.json();
-        if(j && j.audio) ok = await playAudio(j.audio, j.format||'wav');
-        else if(j && j.fallback==='web_tts') ok = await webTTS(replyText||text);
-      }catch(e){ console.warn('[CIRA] speak fail', e); }
+        if(j && j.audio) ok = await playAudio(j.audio, 'mp3');
+      }catch(e){ console.warn('[CIRA] /api/tts 失败', e); }
     }
-    if(!ok) await webTTS(replyText || text || '我刚才走神了');
+    if(!ok) ok = await webTTS(replyText || text || '我刚才走神了');
     turnBusy=false;
-    if(mode==='wake') backToListen(); else endPushTurn();     // 唤醒=连续听；按住说话=回就绪
+    if(mode==='wake') backToListen(); else endPushTurn();
   }
-  function backToListen(){                    // 场景B 唤醒路径：回到连续聆听
-    wakePhase='listen'; speaking=false; heardAny=false;
+  function backToListen(){                    // 场景B：回应后回到连续聆听
+    if(!wakeActive){ endPushTurn(); return; }
     setState(STATE.LISTEN); wakeStatus.textContent='继续聆听…';
-    startWakeTick();
+    wakeFill.style.transform='scaleX(1)';
+    startRecognizer('voice');                 // 继续听下一句
   }
   function endPushTurn(){                      // 场景A 按住说话：一轮结束，回就绪态(不自动连续听)
     wakePhase='idle';
@@ -605,19 +490,14 @@
   function hideWake(){
     // 用户在打字、或输入框里还有内容时，不退出唤醒（保留文字窗口、不中断对话）
     if(mainText.value.trim() || document.activeElement===mainText) return;
-    wakeActive=false; convMode=null; recording=false;
+    wakeActive=false; convMode=null;
     document.body.classList.remove('wake-on');
-    if(wakeTick){ clearInterval(wakeTick); wakeTick=null; }
-    if(vadRAF){ cancelAnimationFrame(vadRAF); vadRAF=null; }
-    if(micStream){ micStream.getTracks().forEach(t=>t.stop()); micStream=null; }
+    if(recognizing) stopRecognizer();
     wakePanel.classList.remove('show');
     setState(STATE.IDLE);
   }
   document.getElementById('wakeFab').addEventListener('click', triggerWake);
-  document.getElementById('wakeMore').addEventListener('click', ()=>{
-    if(usingRealMic) keepListening();   // 真实麦：点"继续说"续命
-    // 降级模式：wakeMore 已绑定为"按住说话"，click 忽略
-  });
+  document.getElementById('wakeMore').addEventListener('click', ()=>{ if(wakeActive) keepListening(); });
 
   // ---------- 状态预览条(开发用)：点哪个停在哪个，不被说话流转覆盖 ----------
   const devBar = document.getElementById('devBar');
@@ -631,8 +511,8 @@
   }
   devBtns.forEach(b=> b.addEventListener('click', ()=> previewState(b.dataset.s)));
 
-  // 启动自检：桥是否可达
-  checkBridge().then(ok=>{ if(USE_BRIDGE) console.log('[CIRA] 桥接服务', ok?'就绪':'不可达(离线降级)'); });
+  // 启动：拉取真模型状态（模型名 / 长期记忆条数 / TTS 模式）
+  apiStatus();
 
   document.addEventListener('gesturestart', e=>e.preventDefault());
 })();
