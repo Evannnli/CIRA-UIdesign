@@ -663,7 +663,7 @@
     stopAllOutput();                         // 先打断一切进行中的输出(含模型回复)
     const opts = ['我在。', '哎！'];
     const phrase = opts[Math.floor(Math.random() * opts.length)];
-    const file = phrase === '我在。' ? 'assets/wake_wo.mp3' : 'assets/wake_ai.mp3';
+    const file = phrase === '我在。' ? 'assets/wake_wo.mp3' : 'assets/wake_ai.wav';
     const audio = new Audio(file);
     let fell = false;
     const fallback = () => { if (!fell) { fell = true; ttsSpeak(phrase); } };
