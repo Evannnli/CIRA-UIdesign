@@ -225,6 +225,26 @@
   async function apiFetch(path, opts){
     const ctrl = new AbortController();
     const tid = setTimeout(()=>ctrl.abort(), (opts && opts.timeout) || 15000);
+    // 原生壳：所有 /api/* 改走原生 HTTP 代理，绕过 WebView 跨域(CORS)限制（Core 不返回 ACAO 头）
+    if (window.CiraNative && window.CiraNative.available && !_apiOverride){
+      try{
+        const res = await window.CiraNative.apiFetch({
+          path: path,
+          method: (opts && opts.method) || 'GET',
+          body: (opts && opts.body) ? String(opts.body) : null,
+          timeout: (opts && opts.timeout) || 15000
+        });
+        clearTimeout(tid);
+        const status = (res && res.status) || 0;
+        const bodyText = (res && res.body) || '';
+        return {
+          ok: status >= 200 && status < 300,
+          status: status,
+          async json(){ try { return JSON.parse(bodyText); } catch(e){ return {}; } },
+          async text(){ return bodyText; }
+        };
+      }catch(e){ clearTimeout(tid); throw e; }
+    }
     try{
       const r = await fetch(API_BASE + path, Object.assign({}, opts, { signal: ctrl.signal }));
       if(!r.ok) throw new Error('HTTP '+r.status);
@@ -419,13 +439,24 @@
     mainCaption.classList.add('show');
     mcStatus.textContent='我在听…（说完松手发送）';
     mcReply.textContent='';
-    if(useNativeAsr){ CiraNative.startAsr(); return; } // 原生离线识别（替代 Web Speech）
+    if(useNativeAsr){ CiraNative.startAsr().catch(function(e){ if(window.CIRA.onNativeError) window.CIRA.onNativeError((e&&e.message)||'识别启动失败，请检查麦克风权限'); }); return; } // 原生离线识别（替代 Web Speech）
     startRecognizer('voice');                         // 开始浏览器端语音识别
   }
   function endTalk(){
     talkBtn.classList.remove('listening');
     talkBtn.innerHTML='按住<br>说话';
-    if(useNativeAsr){ CiraNative.stopAsr(); return; } // 停止原生识别→asrFinal 事件回传整句
+    if(useNativeAsr){
+      CiraNative.stopAsr();
+      // 兜底：松手后若 N 秒内未收到识别结果（没听清/静音），复位提示，避免一直卡在"聆听"
+      setTimeout(function(){
+        if(state===STATE.LISTEN && !turnBusy){
+          setState(STATE.IDLE);
+          mainCaption.classList.add('show');
+          mcStatus.textContent='没听清，松开后再试一次；离麦克风近一点、说清楚些';
+        }
+      }, 4000);
+      return;
+    }
     if(convMode!=='push') return;
     stopRecognizer();                                // 停止识别→onend 拿到整句→跑真实模型
   }
@@ -661,6 +692,12 @@
     getWakePhase: function(){ return wakePhase; },
     isWakeActive: function(){ return wakeActive; },
     setCoreUrl: function(u){ if(u) API_BASE = u; },
+    // 原生识别出错（启动失败/权限被拒/运行时异常）→ 在界面给出明确提示，不再静默卡死
+    onNativeError: function(msg){
+      setState(STATE.IDLE);
+      mainCaption.classList.add('show');
+      mcStatus.textContent = '语音识别出错：' + (msg || '未知错误') + '（请确认已授权麦克风）';
+    },
     // 原生离线识别回传：一句完整识别 → 进入对话流程（等同说了一句话）
     onNativeTranscript: function(text){ if(text && text.trim()) onSpeechFinal(text.trim()); },
     // 原生离线识别中间结果 → 实时"正在听"反馈

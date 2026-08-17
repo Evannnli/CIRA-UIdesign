@@ -22,6 +22,11 @@
       return plugin ? plugin.requestPermissions() : Promise.resolve({ mic: false, overlay: false, notification: false });
     },
 
+    // 轻量申请麦克风+通知（不跳悬浮窗设置），App 启动时预申请
+    requestMicPermission: function () {
+      return plugin ? plugin.requestMicPermission() : Promise.resolve({ mic: false, notification: false });
+    },
+
     // 启动原生唤醒词引擎（前台 Service 内常驻）。返回 Promise
     startWakeword: function (opts) {
       return plugin ? plugin.startWakeword(opts || {}) : Promise.resolve();
@@ -40,6 +45,11 @@
     // 停止原生语音识别
     stopAsr: function () {
       return plugin ? plugin.stopAsr() : Promise.resolve();
+    },
+
+    // 原生 HTTP 代理：绕过 WebView 的 CORS，所有 /api/* 改走原生层（Core 地址由 BuildConfig 注入）
+    apiFetch: function (req) {
+      return plugin ? plugin.apiFetch(req || {}) : Promise.reject(new Error('no plugin'));
     },
 
     // 显示系统级浮窗（顶层悬浮星云）
@@ -109,6 +119,13 @@
       }
     } catch (e) {}
   });
+  CiraNative.on('asrError', function (payload) {
+    try {
+      if (window.CIRA && typeof window.CIRA.onNativeError === 'function') {
+        window.CIRA.onNativeError(payload && payload.text);
+      }
+    } catch (e) {}
+  });
 
   // ---- Web → 原生：状态回传 ----
   // Web 在状态切换时调用 CiraNative.reportState，原生据此联动浮窗/保活。
@@ -126,6 +143,8 @@
       try { if (window.CIRA && window.CIRA.setCoreUrl) window.CIRA.setCoreUrl(cfg.coreUrl); } catch (e) {}
       try { if (window.CIRA_SET_CORE_URL) window.CIRA_SET_CORE_URL(cfg.coreUrl); } catch (e) {}
     }
+    // 主动预申请麦克风+通知权限，避免首次按住说话卡在权限弹窗
+    try { CiraNative.requestMicPermission().catch(function () {}); } catch (e) {}
     window.dispatchEvent(new CustomEvent('ciranative:ready', { detail: cfg || {} }));
   }).catch(function () {});
 

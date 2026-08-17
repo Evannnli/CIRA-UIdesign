@@ -23,6 +23,14 @@ import androidx.core.content.ContextCompat;
 
 import java.util.Map;
 
+import android.app.Activity;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+
 /**
  * CIRA 原生插件：把"后台运行 / 熄屏唤醒 / 顶层浮窗"三件事暴露给 Web 层。
  * Web 侧通过 window.CiraNative（native-bridge.js）调用，事件 wakeword 回传唤醒命中。
@@ -35,6 +43,8 @@ public class CiraRuntimePlugin extends Plugin {
 
     private ActivityResultLauncher<String[]> permLauncher;
     private PermissionCallback pendingCallback;
+    private PluginCall pendingAsrCall;    // startAsr 因缺权限挂起，待授权后继续
+    private PluginCall pendingMicCall;     // requestMicPermission 挂起
     private VoskAsrEngine asr;            // 离线语音识别引擎（原生替代 Web Speech）
 
     private interface PermissionCallback {
@@ -48,6 +58,20 @@ public class CiraRuntimePlugin extends Plugin {
         permLauncher = getActivity().registerForActivityResult(
                 new ActivityResultContracts.RequestMultiplePermissions(),
                 result -> {
+                    boolean mic = Boolean.TRUE.equals(result.get(Manifest.permission.RECORD_AUDIO));
+                    if (pendingAsrCall != null) {
+                        PluginCall c = pendingAsrCall; pendingAsrCall = null;
+                        if (mic) doStartAsr(c); else c.reject("mic_permission_required", "麦克风权限被拒绝");
+                        return;
+                    }
+                    if (pendingMicCall != null) {
+                        PluginCall c = pendingMicCall; pendingMicCall = null;
+                        JSObject r = new JSObject();
+                        r.put("mic", mic);
+                        r.put("notification", Boolean.TRUE.equals(result.get(Manifest.permission.POST_NOTIFICATIONS)));
+                        c.resolve(r);
+                        return;
+                    }
                     if (pendingCallback != null) {
                         pendingCallback.onResult(result);
                         pendingCallback = null;
@@ -109,6 +133,26 @@ public class CiraRuntimePlugin extends Plugin {
         permLauncher.launch(perms);
     }
 
+    /** 轻量申请麦克风+通知权限（不跳转悬浮窗设置页），供 App 启动时预申请 */
+    @PluginMethod
+    public void requestMicPermission(PluginCall call) {
+        Context ctx = getContext();
+        if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO)
+                == PackageManager.PERMISSION_GRANTED) {
+            JSObject r = new JSObject();
+            r.put("mic", true);
+            r.put("notification", ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS)
+                    == PackageManager.PERMISSION_GRANTED);
+            call.resolve(r);
+            return;
+        }
+        pendingMicCall = call;
+        permLauncher.launch(new String[]{
+                Manifest.permission.RECORD_AUDIO,
+                Manifest.permission.POST_NOTIFICATIONS
+        });
+    }
+
     // ---------- 唤醒词（前台 Service） ----------
     @PluginMethod
     public void startWakeword(PluginCall call) {
@@ -159,22 +203,34 @@ public class CiraRuntimePlugin extends Plugin {
     // ---------- 离线语音识别（Vosk，替代 Web Speech API） ----------
     @PluginMethod
     public void startAsr(PluginCall call) {
-        Context ctx = getContext();
-        if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO)
+        // 缺麦克风权限时自动申请，避免 Web 层忘记调 requestPermissions 导致识别永不启动
+        if (ContextCompat.checkSelfPermission(getContext(), Manifest.permission.RECORD_AUDIO)
                 != PackageManager.PERMISSION_GRANTED) {
-            call.reject("mic_permission_required", "需要麦克风权限，请先调用 requestPermissions");
+            pendingAsrCall = call;
+            permLauncher.launch(new String[]{
+                    Manifest.permission.RECORD_AUDIO,
+                    Manifest.permission.POST_NOTIFICATIONS
+            });
             return;
         }
+        doStartAsr(call);
+    }
+
+    private void doStartAsr(PluginCall call) {
         try {
             if (asr == null) {
-                asr = new VoskAsrEngine(ctx);
+                asr = new VoskAsrEngine(getContext());
                 asr.setListener(new VoskAsrEngine.AsrListener() {
                     @Override public void onPartial(String text) { emitAsr("asrPartial", text); }
                     @Override public void onFinal(String text) { emitAsr("asrFinal", text); }
                     @Override public void onError(String msg) { emitAsr("asrError", msg); }
                 });
             }
-            asr.start();
+            // 模型拷贝+加载较重，放后台线程，避免阻塞主线程/ANR
+            new Thread(() -> {
+                try { asr.start(); }
+                catch (Exception e) { emitAsr("asrError", e.getMessage()); }
+            }).start();
             call.resolve();
         } catch (Exception e) {
             call.reject("asr_start_failed", e.getMessage());
@@ -187,10 +243,68 @@ public class CiraRuntimePlugin extends Plugin {
         call.resolve();
     }
 
+    // 在 UI 线程回传事件，规避 Capacitor notifyListeners 从后台线程调用可能的问题
     private void emitAsr(String event, String text) {
-        JSObject d = new JSObject();
-        d.put("text", text == null ? "" : text);
-        notifyListeners(event, d);
+        final String t = text == null ? "" : text;
+        Activity a = getActivity();
+        if (a != null) {
+            a.runOnUiThread(() -> {
+                JSObject d = new JSObject();
+                d.put("text", t);
+                notifyListeners(event, d);
+            });
+        } else {
+            JSObject d = new JSObject();
+            d.put("text", t);
+            notifyListeners(event, d);
+        }
+    }
+
+    // ---------- 原生 HTTP 代理（绕过 WebView CORS，所有 /api/* 走原生） ----------
+    @PluginMethod
+    public void apiFetch(PluginCall call) {
+        String path = call.getString("path");
+        String method = call.getString("method", "GET");
+        String body = call.getString("body");
+        int timeout = call.getInt("timeout", 15000);
+        if (path == null || path.isEmpty()) { call.reject("missing_path"); return; }
+        String base = BuildConfig.CIRA_CORE_URL;
+        if (base == null || base.isEmpty()) { call.reject("core_url_empty"); return; }
+        final String url = base + path;
+        final String fMethod = method;
+        final String fBody = (body == null) ? null : body;
+        final int fTimeout = timeout;
+        new Thread(() -> {
+            try {
+                URL u = new URL(url);
+                HttpURLConnection conn = (HttpURLConnection) u.openConnection();
+                conn.setRequestMethod(fMethod);
+                conn.setConnectTimeout(fTimeout);
+                conn.setReadTimeout(fTimeout);
+                conn.setRequestProperty("Content-Type", "application/json");
+                conn.setRequestProperty("Accept", "application/json");
+                if (fBody != null && !fBody.isEmpty() && !"GET".equalsIgnoreCase(fMethod)) {
+                    conn.setDoOutput(true);
+                    try (OutputStream os = conn.getOutputStream()) {
+                        os.write(fBody.getBytes(StandardCharsets.UTF_8));
+                    }
+                }
+                int status = conn.getResponseCode();
+                StringBuilder sb = new StringBuilder();
+                try (BufferedReader br = new BufferedReader(new InputStreamReader(
+                        (status >= 200 && status < 400) ? conn.getInputStream() : conn.getErrorStream(),
+                        StandardCharsets.UTF_8))) {
+                    String line;
+                    while ((line = br.readLine()) != null) sb.append(line);
+                }
+                JSObject ret = new JSObject();
+                ret.put("status", status);
+                ret.put("body", sb.toString());
+                call.resolve(ret);
+            } catch (Exception e) {
+                call.reject("api_fetch_failed", e.getMessage());
+            }
+        }).start();
     }
 
     // ---------- Web → 原生：状态回传（仅记录，可扩展联动浮窗） ----------
