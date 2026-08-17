@@ -12,10 +12,13 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-
-        // 注册本项目的原生插件（唤醒词 / 浮窗 / 前台保活 / 权限）
+        // ⚠️ 必须在 super.onCreate()【之前】注册：Bridge 在 super.onCreate() 内部 this.load() 里就已经
+        // bridgeBuilder.create() 把 Bridge 实例建好了；之后再 registerPlugin 只是往已废弃的 builder 加，
+        // 不会进入已创建的 Bridge → 插件永不生效 → 所有原生调用（apiFetch/startAsr/showOverlay）静默失败
+        // （表现为手机端 0 流量、文字/语音/浮窗全无反馈）。这是此前所有"修了没用"的真正根因。
         registerPlugin(CiraRuntimePlugin.class);
+
+        super.onCreate(savedInstanceState);
 
         // 允许 WebView 访问 http 的 Core（小米15 上指向局域网/云 Core，避免 mixed-content 拦截）
         Bridge bridge = getBridge();
