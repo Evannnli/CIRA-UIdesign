@@ -222,22 +222,32 @@
   const USE_API = true;                           // 真模型常驻本机
   // 调试模式：URL 加 ?debug=1 才显示开发工具栏（5 个状态按钮）与模拟入口；面向用户默认隐藏
   if(new URLSearchParams(location.search).get('debug')) document.body.classList.add('debug');
+  // 构建版本（每次出包改这里，便于真机确认装的是哪一版）
+  const APP_BUILD = 'REL-0817-C';
   // 轻量诊断条：把原生/网络的关键事件显示在屏幕底部，便于真机排障（双击可清空）。
   // 不依赖控制台，用户直接看黑条即可告诉我们"它到底收到了什么/没收到什么"。
+  // 关键：启动即显示，且右上角常驻版本号——用于一眼确认装的是不是最新包。
   (function(){
     var box = document.createElement('div');
     box.id = 'ciraDbg';
-    box.style.cssText = 'position:fixed;left:8px;right:8px;bottom:8px;z-index:9999;max-height:38vh;overflow:auto;background:rgba(0,0,0,.82);color:#9fe;font:12px/1.5 monospace;padding:8px 10px;border-radius:10px;display:none;white-space:pre-wrap;';
+    box.style.cssText = 'position:fixed;left:8px;right:8px;bottom:8px;z-index:9999;max-height:38vh;overflow:auto;background:rgba(0,0,0,.82);color:#9fe;font:12px/1.5 monospace;padding:8px 10px;border-radius:10px;display:block;white-space:pre-wrap;';
     document.body.appendChild(box);
     window.__ciraDbg = function(msg){
       if(!msg) return;
-      box.style.display = 'block';
       var t = new Date().toLocaleTimeString();
       box.textContent = (box.textContent ? box.textContent + '\n' : '') + '[' + t + '] ' + msg;
       var lines = box.textContent.split('\n');
       if(lines.length > 30) box.textContent = lines.slice(-30).join('\n');
     };
-    box.addEventListener('dblclick', function(){ box.textContent = ''; box.style.display = 'none'; });
+    box.addEventListener('dblclick', function(){ box.textContent = ''; });
+    // 右上角常驻版本号（独立存在，便于一眼确认包版本）
+    var ver = document.createElement('div');
+    ver.id = 'ciraVer';
+    ver.style.cssText = 'position:fixed;top:6px;right:8px;z-index:9999;background:rgba(0,0,0,.6);color:#ffd54f;font:11px monospace;padding:2px 8px;border-radius:8px;';
+    ver.textContent = 'CIRA ' + APP_BUILD;
+    document.body.appendChild(ver);
+    // 启动即打印，证明此包为新构建，并暴露原生壳是否加载
+    window.__ciraDbg('CIRA 启动 · build ' + APP_BUILD + (window.CiraNative && window.CiraNative.available ? ' · 原生壳已加载' : ' · Web预览模式(原生壳未加载!)'));
   })();
   async function apiFetch(path, opts){
     const ctrl = new AbortController();
