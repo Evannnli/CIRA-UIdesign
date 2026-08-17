@@ -64,15 +64,17 @@ public class VoskAsrEngine {
     // ---- 首次把 assets 里的模型拷到内部存储（Vosk 只能从文件路径加载） ----
     private void copyModelIfNeeded() throws IOException {
         File outDir = new File(ctx.getFilesDir(), MODEL_DIR);
-        File sentinel = new File(outDir, ".copied");
-        if (sentinel.exists() && new File(outDir, "am/final.mdl").exists()) return;
+        File finalMdl = new File(outDir, "am/final.mdl");
+        // 完整性校验：sentinel 存在 且 final.mdl 存在且大小合理(>1MB) 才复用，否则强制重拷，
+        // 避免覆盖安装/拷贝中断留下的"假拷贝"导致 Vosk 加载出空模型、识别不出任何字。
+        if (new File(outDir, ".copied").exists() && finalMdl.exists() && finalMdl.length() > 1024 * 1024) return;
         if (outDir.exists()) deleteRecursively(outDir);
         outDir.mkdirs();
         copyAssetFolder(ctx.getAssets(), MODEL_ASSET, outDir);
-        if (!new File(outDir, "am/final.mdl").exists()) {
-            throw new IOException("Vosk 模型拷贝不完整：缺少 am/final.mdl");
+        if (!finalMdl.exists() || finalMdl.length() < 1024 * 1024) {
+            throw new IOException("Vosk 模型拷贝不完整：am/final.mdl 缺失或过小");
         }
-        sentinel.createNewFile();
+        new File(outDir, ".copied").createNewFile();
     }
 
     private void copyAssetFolder(AssetManager am, String src, File dst) throws IOException {

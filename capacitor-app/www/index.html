@@ -222,6 +222,23 @@
   const USE_API = true;                           // 真模型常驻本机
   // 调试模式：URL 加 ?debug=1 才显示开发工具栏（5 个状态按钮）与模拟入口；面向用户默认隐藏
   if(new URLSearchParams(location.search).get('debug')) document.body.classList.add('debug');
+  // 轻量诊断条：把原生/网络的关键事件显示在屏幕底部，便于真机排障（双击可清空）。
+  // 不依赖控制台，用户直接看黑条即可告诉我们"它到底收到了什么/没收到什么"。
+  (function(){
+    var box = document.createElement('div');
+    box.id = 'ciraDbg';
+    box.style.cssText = 'position:fixed;left:8px;right:8px;bottom:8px;z-index:9999;max-height:38vh;overflow:auto;background:rgba(0,0,0,.82);color:#9fe;font:12px/1.5 monospace;padding:8px 10px;border-radius:10px;display:none;white-space:pre-wrap;';
+    document.body.appendChild(box);
+    window.__ciraDbg = function(msg){
+      if(!msg) return;
+      box.style.display = 'block';
+      var t = new Date().toLocaleTimeString();
+      box.textContent = (box.textContent ? box.textContent + '\n' : '') + '[' + t + '] ' + msg;
+      var lines = box.textContent.split('\n');
+      if(lines.length > 30) box.textContent = lines.slice(-30).join('\n');
+    };
+    box.addEventListener('dblclick', function(){ box.textContent = ''; box.style.display = 'none'; });
+  })();
   async function apiFetch(path, opts){
     const ctrl = new AbortController();
     const tid = setTimeout(()=>ctrl.abort(), (opts && opts.timeout) || 15000);
@@ -237,13 +254,14 @@
         clearTimeout(tid);
         const status = (res && res.status) || 0;
         const bodyText = (res && res.body) || '';
+        if(window.__ciraDbg) window.__ciraDbg('API ' + path + ' -> ' + status + (status>=200&&status<300?' OK':' FAIL'));
         return {
           ok: status >= 200 && status < 300,
           status: status,
           async json(){ try { return JSON.parse(bodyText); } catch(e){ return {}; } },
           async text(){ return bodyText; }
         };
-      }catch(e){ clearTimeout(tid); throw e; }
+      }catch(e){ clearTimeout(tid); if(window.__ciraDbg) window.__ciraDbg('API ' + path + ' ERR ' + ((e&&e.message)||e)); throw e; }
     }
     try{
       const r = await fetch(API_BASE + path, Object.assign({}, opts, { signal: ctrl.signal }));
@@ -460,9 +478,27 @@
     if(convMode!=='push') return;
     stopRecognizer();                                // 停止识别→onend 拿到整句→跑真实模型
   }
-  talkBtn.addEventListener('pointerdown', e=>{e.preventDefault(); startTalk();});
-  talkBtn.addEventListener('pointerup', endTalk);
-  talkBtn.addEventListener('pointercancel', endTalk);
+  // 按住说话：修复"松手不复位/一直听"——Android WebView 里对 pointerdown 调 preventDefault 会吞掉 pointerup，
+  // 因此改用 touch-action:none（禁止按钮上的滚动/缩放手势，避免指针事件被吞），并加指针捕获 + 全窗口兜底释放。
+  let isTalking = false;
+  talkBtn.style.touchAction = 'none';
+  function beginTalkPointer(e){
+    try { if(e && e.pointerId != null) talkBtn.setPointerCapture(e.pointerId); } catch(_){}
+    isTalking = true;
+    startTalk();
+  }
+  function endTalkPointer(){
+    if(!isTalking) return;
+    isTalking = false;
+    endTalk();
+  }
+  talkBtn.addEventListener('pointerdown', beginTalkPointer);
+  talkBtn.addEventListener('pointerup', endTalkPointer);
+  talkBtn.addEventListener('pointercancel', endTalkPointer);
+  talkBtn.addEventListener('lostpointercapture', endTalkPointer);
+  // 兜底：任意位置松开都结束（手指滑出按钮时 pointerup 可能不落到按钮上）
+  window.addEventListener('pointerup', endTalkPointer);
+  window.addEventListener('pointercancel', endTalkPointer);
 
   // ---------- 常驻文字框：直接提交跑真实模型（独立于麦克风） ----------
   function sendMainText(){
@@ -609,6 +645,7 @@
     if(crisis) showCrisis();
     wakePhase='speak'; setState(STATE.SPEAK);
     ui.reply.textContent = replyText || text;
+    if(window.__ovCap) window.__ovCap.textContent = '小雅：' + (replyText || text);
     if(mode==='push') ui.reply.classList.add('show');  // 气泡淡入
     ui.status.textContent = '回应中…';
     let ok=false;
@@ -697,12 +734,17 @@
       setState(STATE.IDLE);
       mainCaption.classList.add('show');
       mcStatus.textContent = '语音识别出错：' + (msg || '未知错误') + '（请确认已授权麦克风）';
+      if(window.__ciraDbg) window.__ciraDbg('ASR ERROR: ' + (msg || '未知错误'));
     },
     // 原生离线识别回传：一句完整识别 → 进入对话流程（等同说了一句话）
-    onNativeTranscript: function(text){ if(text && text.trim()) onSpeechFinal(text.trim()); },
+    onNativeTranscript: function(text){
+      if(window.__ciraDbg) window.__ciraDbg('ASR final: ' + (text || ''));
+      if(text && text.trim()) onSpeechFinal(text.trim());
+    },
     // 原生离线识别中间结果 → 实时"正在听"反馈
     onNativeInterim: function(text){
       if(!text) return;
+      if(window.__ciraDbg) window.__ciraDbg('ASR partial: ' + text);
       if(wakeActive){ wakeStatus.textContent = '听到：「'+text+'」'; }
       else { mainCaption.classList.add('show'); mcStatus.textContent='我在听…「'+text+'」'; }
     }
@@ -713,9 +755,23 @@
 
   // ---------- ?overlay=1 浮窗模式（系统级悬浮窗内加载）----------
   if(new URLSearchParams(location.search).get('overlay')){
-    ['statebar','talkWrap','responseArea','welcomeHint','wakeFab','wakePanel','textDock','devBar'].forEach(function(id){
+    document.body.classList.add('overlay-on');
+    // 浮窗里需要能看到"听到/回应"，保留 wakePanel 与 responseArea，只隐藏纯主屏装饰
+    ['statebar','talkWrap','welcomeHint','wakeFab','textDock','devBar'].forEach(function(id){
       var el=document.getElementById(id); if(el) el.style.display='none';
     });
+    var st=document.createElement('style');
+    st.textContent='.overlay-on #wakePanel,.overlay-on #responseArea{position:fixed;left:6px;right:6px;top:54px;bottom:6px;z-index:50;background:rgba(18,18,28,.82);border-radius:12px;padding:10px;overflow:auto;color:#fff;}'+
+                  '.overlay-on #wakePanel{top:6px;bottom:auto;max-height:46vh;}';
+    document.head.appendChild(st);
+    // 浮窗常驻条：保证"听到/回应"一定可见（即使 wakePanel 样式异常）
+    var ov=document.createElement('div'); ov.id='ovCap';
+    ov.style.cssText='position:fixed;left:6px;right:6px;top:6px;z-index:60;background:rgba(20,20,30,.78);color:#fff;font:13px/1.5 -apple-system,sans-serif;padding:8px 10px;border-radius:10px;max-height:40vh;overflow:auto;';
+    document.body.appendChild(ov);
+    window.__ovCap = ov;
+    var _interim=window.CIRA.onNativeInterim, _trans=window.CIRA.onNativeTranscript;
+    window.CIRA.onNativeInterim=function(t){ if(ov) ov.textContent='听到：'+(t||''); if(_interim) _interim(t); };
+    window.CIRA.onNativeTranscript=function(t){ if(ov) ov.textContent='收到：'+(t||''); if(_trans) _trans(t); };
     document.body.style.background='transparent';
     var _nebOv=document.getElementById('nebula'); if(_nebOv) _nebOv.style.background='transparent';
     if(nebula){ nebula.addEventListener('pointerdown', function(){ if(window.CiraNative) window.CiraNative.openMain(); }); }

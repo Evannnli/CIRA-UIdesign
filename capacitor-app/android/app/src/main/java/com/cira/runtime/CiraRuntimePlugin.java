@@ -275,6 +275,9 @@ public class CiraRuntimePlugin extends Plugin {
         final String fBody = (body == null) ? null : body;
         final int fTimeout = timeout;
         new Thread(() -> {
+            int status = -1;
+            String bodyText = "";
+            String errMsg = null;
             try {
                 URL u = new URL(url);
                 HttpURLConnection conn = (HttpURLConnection) u.openConnection();
@@ -289,7 +292,7 @@ public class CiraRuntimePlugin extends Plugin {
                         os.write(fBody.getBytes(StandardCharsets.UTF_8));
                     }
                 }
-                int status = conn.getResponseCode();
+                status = conn.getResponseCode();
                 StringBuilder sb = new StringBuilder();
                 try (BufferedReader br = new BufferedReader(new InputStreamReader(
                         (status >= 200 && status < 400) ? conn.getInputStream() : conn.getErrorStream(),
@@ -297,14 +300,29 @@ public class CiraRuntimePlugin extends Plugin {
                     String line;
                     while ((line = br.readLine()) != null) sb.append(line);
                 }
-                JSObject ret = new JSObject();
-                ret.put("status", status);
-                ret.put("body", sb.toString());
-                call.resolve(ret);
+                bodyText = sb.toString();
             } catch (Exception e) {
-                call.reject("api_fetch_failed", e.getMessage());
+                errMsg = e.getMessage();
+            }
+            // Capacitor 要求 PluginCall 结果必须在主线程回传，否则 JS 侧 Promise 永不 resolve
+            final int fStatus = status;
+            final String fBodyText = bodyText;
+            final String fErr = errMsg;
+            final Activity a = getActivity();
+            if (a != null) {
+                a.runOnUiThread(() -> deliverApiResult(call, fStatus, fBodyText, fErr));
+            } else {
+                deliverApiResult(call, fStatus, fBodyText, fErr);
             }
         }).start();
+    }
+
+    private void deliverApiResult(PluginCall call, int status, String bodyText, String errMsg) {
+        if (errMsg != null) { call.reject("api_fetch_failed", errMsg); return; }
+        JSObject ret = new JSObject();
+        ret.put("status", status);
+        ret.put("body", bodyText == null ? "" : bodyText);
+        call.resolve(ret);
     }
 
     // ---------- Web → 原生：状态回传（仅记录，可扩展联动浮窗） ----------
