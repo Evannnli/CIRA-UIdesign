@@ -1,0 +1,11 @@
+# Node
+node_modules/
+
+# Android 本地配置 / 产物（android/ 内另有自己的 .gitignore 管 build）
+android/local.properties
+*.keystore
+*.jks
+
+# 编辑器
+*.swp
+.idea/

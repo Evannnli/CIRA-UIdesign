@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">CIRA</string>
+    <string name="title_activity_main">CIRA</string>
+    <string name="package_name">com.cira.runtime</string>
+    <string name="custom_url_scheme">com.cira.runtime</string>
+</resources>

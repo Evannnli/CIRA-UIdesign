@@ -1,0 +1,675 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>CIRA · 安卓原型 v1.0（冻结版）</title>
+<style>
+  :root{
+    --ink:#f6e9dc;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{width:100%;height:100%;overflow:hidden;background:#05030a;
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Segoe UI",sans-serif;
+    color:var(--ink);user-select:none;-webkit-user-select:none;touch-action:none;}
+  #nebula{position:fixed;inset:0;width:100%;height:100%;display:block;}
+
+  /* 顶部状态条 */
+  #statebar{position:fixed;top:env(safe-area-inset-top,0);left:0;right:0;
+    display:flex;justify-content:center;padding:14px 0 6px;z-index:5;pointer-events:none;}
+  #stateText{font-size:13px;letter-spacing:3px;opacity:.6;
+    text-shadow:0 0 14px rgba(255,160,90,.5);}
+
+  /* 底部按住说话 */
+  #talkWrap{position:fixed;left:0;right:0;bottom:calc(env(safe-area-inset-bottom,0) + 10px);
+    display:flex;flex-direction:column;align-items:center;gap:8px;z-index:6;}
+  #talkBtn{width:84px;height:84px;border-radius:50%;border:none;
+    background:radial-gradient(circle at 35% 30%,#4a2a18,#1a0e08);
+    box-shadow:0 0 0 2px rgba(255,170,100,.35),0 8px 30px rgba(0,0,0,.55),
+      inset 0 0 24px rgba(255,160,90,.25);
+    color:var(--ink);font-size:13px;letter-spacing:2px;
+    display:flex;align-items:center;justify-content:center;
+    transition:transform .12s ease, box-shadow .2s ease;will-change:transform;}
+  #talkBtn:active{transform:scale(.9);
+    box-shadow:0 0 0 6px rgba(255,170,100,.5),0 0 40px rgba(255,170,100,.5),
+      inset 0 0 30px rgba(255,170,100,.5);}
+  #talkBtn.listening{animation:pulse 1.1s ease-in-out infinite;}
+  @keyframes pulse{0%,100%{box-shadow:0 0 0 2px rgba(255,170,100,.4),0 0 26px rgba(255,170,100,.3);}
+    50%{box-shadow:0 0 0 8px rgba(255,170,100,.55),0 0 48px rgba(255,170,100,.6);}}
+
+  /* 主屏状态指示器（紧凑，仅短提示；长回复已移至 #responseBubble） */
+  #mainCaption{max-width:min(80vw,360px);text-align:center;
+    padding:6px 12px;border-radius:14px;
+    background:rgba(28,16,9,.5);border:1px solid rgba(255,185,130,.18);
+    font-size:12px;line-height:1.4;opacity:0;transition:opacity .3s ease;
+    pointer-events:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  #mainCaption.show{opacity:.9;}
+  #mainCaption .mc-reply{display:none;}  /* push 模式不再使用 */
+
+  /* ===== push 模式专用回复气泡（与输入控件分离，不再重叠）===== */
+  #responseArea{position:fixed;left:0;right:0;
+    bottom:calc(env(safe-area-inset-bottom,0) + 230px);
+    display:flex;justify-content:center;padding:0 20px;z-index:6;pointer-events:none;}
+  #responseBubble{max-width:min(84vw,400px);min-height:36px;
+    background:rgba(22,13,8,.78);border:1px solid rgba(255,180,120,.25);
+    border-radius:18px;padding:12px 16px;
+    font-size:15px;line-height:1.65;color:var(--ink);
+    -webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);
+    opacity:0;transition:opacity .35s ease;pointer-events:auto;}
+  #responseBubble.show{opacity:1;}
+
+  /* 首次打开引导（onboarding）：移到屏幕中上部，不再压住输入框 */
+  #welcomeHint{position:fixed;left:50%;top:34%;transform:translate(-50%,-50%) translateY(10px);
+    z-index:7;
+    max-width:min(82vw,380px);text-align:center;padding:11px 18px;border-radius:22px;
+    background:rgba(28,16,9,.6);border:1px solid rgba(255,185,130,.32);
+    color:var(--ink);font-size:14px;letter-spacing:1px;line-height:1.5;
+    -webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);
+    box-shadow:0 0 30px rgba(255,160,90,.18);
+    opacity:0;pointer-events:none;transition:opacity .5s ease, transform .5s ease;}
+  #welcomeHint.show{opacity:1;transform:translate(-50%,-50%) translateY(0);
+    animation:welcomePulse 2.2s ease-in-out infinite;}
+  #welcomeHint.hide{opacity:0;transform:translate(-50%,-50%) translateY(10px);}
+  @keyframes welcomePulse{0%,100%{box-shadow:0 0 24px rgba(255,160,90,.18);}
+    50%{box-shadow:0 0 46px rgba(255,160,90,.42);border-color:rgba(255,200,160,.55);}}
+
+  /* 模拟唤醒 FAB（开发用，真机由唤醒词触发） */
+  #wakeFab{position:fixed;top:calc(env(safe-area-inset-top,0) + 12px);right:14px;
+    z-index:7;width:54px;height:54px;border-radius:50%;border:1px solid rgba(255,200,160,.2);
+    background:rgba(30,18,10,.6);color:var(--ink);font-size:11px;line-height:1.2;
+    backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;}
+  #wakeFab:active{background:rgba(60,36,20,.8);}
+
+  /* 场景B：底部半透明悬浮生命体 */
+  #wakePanel{position:fixed;left:50%;transform:translateX(-50%) translateY(140%);
+    bottom:calc(env(safe-area-inset-bottom,0) + 18px);
+    width:min(86vw,420px);height:148px;border-radius:30px;z-index:8;
+    background:linear-gradient(180deg,rgba(40,24,16,.42),rgba(12,7,5,.6));
+    border:1px solid rgba(255,180,120,.28);
+    box-shadow:0 10px 50px rgba(0,0,0,.55),0 0 44px rgba(255,160,90,.14);
+    backdrop-filter:blur(18px) saturate(1.1);
+    display:flex;align-items:center;gap:14px;padding:0 20px;
+    opacity:0;transition:transform .45s cubic-bezier(.2,.9,.25,1),opacity .4s ease;
+    -webkit-backdrop-filter:blur(18px) saturate(1.1);}
+  #wakePanel.show{transform:translateX(-50%) translateY(0);opacity:1;}
+  #miniWrap{width:108px;height:108px;flex:0 0 108px;border-radius:50%;position:relative;}
+  #miniNebula{width:108px;height:108px;display:block;}
+  /* “被包裹”的环 */
+  #miniRing{position:absolute;inset:0;border-radius:50%;
+    border:1.5px solid rgba(255,185,130,.35);
+    box-shadow:0 0 22px rgba(255,160,90,.18),inset 0 0 18px rgba(255,160,90,.12);
+    pointer-events:none;}
+  #wakeInfo{flex:1;display:flex;flex-direction:column;gap:6px;min-width:0;}
+  #wakeReply{font-size:17px;letter-spacing:2px;opacity:.94;}
+  #wakeStatus{font-size:12px;opacity:.55;letter-spacing:1px;}
+  #wakeTimer{width:100%;height:3px;border-radius:3px;background:rgba(255,200,160,.14);overflow:hidden;margin-top:4px;}
+  #wakeTimerFill{height:100%;width:100%;background:linear-gradient(90deg,#ff8a3d,#ff9eb5);
+    transform-origin:left;transition:none;}
+  #wakeMic{font-size:11px;opacity:.45;letter-spacing:.5px;}
+  #wakeMore{font-size:12px;opacity:.7;border:1px solid rgba(255,200,160,.25);
+    border-radius:14px;padding:6px 12px;background:transparent;color:var(--ink);flex:0 0 auto;}
+  #wakeMore.hold{font-size:13px;padding:9px 18px;background:rgba(255,150,90,.18);
+    border-color:rgba(255,200,160,.5);opacity:.95;}
+
+  /* 状态预览条(开发用)：单独停在某个状态看动效 */
+  #devBar{position:fixed;top:calc(env(safe-area-inset-top,0) + 44px);left:0;right:0;
+    display:flex;justify-content:center;gap:7px;z-index:6;opacity:.55;pointer-events:auto;}
+  #devBar button{font-size:11px;letter-spacing:1px;padding:6px 11px;border-radius:14px;
+    border:1px solid rgba(255,200,160,.22);background:rgba(30,18,10,.5);color:var(--ink);
+    -webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);}
+  #devBar button.on{background:rgba(255,150,90,.30);border-color:rgba(255,200,160,.55);opacity:1;}
+  /* 开发工具栏：面向用户时隐藏，仅 ?debug=1 显示 */
+  body:not(.debug) #devBar{display:none;}
+
+  /* 常驻文字输入坞：主屏/唤醒共用入口，浮于唤醒面板之上(z-index 高于面板) */
+  #textDock{position:fixed;left:0;right:0;
+    bottom:calc(env(safe-area-inset-bottom,0) + 175px);
+    display:flex;justify-content:center;padding:0 16px;z-index:9;pointer-events:none;}
+  #textDock > *{pointer-events:auto;}
+  #mainText{flex:1;max-width:min(86vw,420px);min-width:0;height:44px;border-radius:22px;
+    border:1px solid rgba(255,180,120,.3);background:rgba(22,13,8,.72);color:var(--ink);
+    font-size:15px;padding:0 16px;outline:none;
+    -webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);}
+  #mainText::placeholder{color:rgba(246,233,220,.4);}
+  #sendBtn{flex:0 0 auto;height:44px;margin-left:8px;padding:0 20px;border-radius:22px;border:none;
+    background:radial-gradient(circle at 35% 30%,#ff8a3d,#a8552a);color:#1a0e08;
+    font-size:15px;font-weight:600;letter-spacing:1px;}
+  #sendBtn:active{transform:scale(.95);}
+  /* 唤醒态：文字框上移到悬浮面板之上，且不被面板盖住 */
+  body.wake-on #textDock{bottom:calc(env(safe-area-inset-bottom,0) + 200px);}
+  body.wake-on #responseArea{bottom:calc(env(safe-area-inset-bottom,0) + 265px);}
+</style>
+</head>
+<body>
+  <canvas id="nebula"></canvas>
+
+  <div id="statebar"><div id="stateText">待机</div></div>
+
+  <button id="wakeFab">唤醒</button>
+
+  <!-- 状态预览条(开发用)：点哪个就停在哪个状态 -->
+  <div id="devBar">
+    <button data-s="idle">待机</button>
+    <button data-s="listening">聆听</button>
+    <button data-s="thinking">思考</button>
+    <button data-s="speaking">回应</button>
+    <button data-s="wake">唤醒</button>
+  </div>
+
+  <div id="talkWrap">
+    <div id="mainCaption"><div class="mc-status"></div><div class="mc-reply"></div></div>
+    <button id="talkBtn">按住<br>说话</button>
+  </div>
+
+  <!-- 首次打开引导：脉冲提示，首次交互后自动隐藏（不再出现会记到 localStorage） -->
+  <div id="welcomeHint">👋 嗨！按住下面按钮，跟我说话吧～</div>
+
+  <!-- push 模式专用回复气泡（与输入控件分离，避免重叠） -->
+  <div id="responseArea"><div id="responseBubble"></div></div>
+
+  <!-- 常驻文字输入入口：位于按住说话上方；语音唤醒时浮于悬浮面板之上 -->
+  <div id="textDock">
+    <input id="mainText" type="text" placeholder="说点什么…（也可打字）" autocomplete="off" inputmode="text" />
+    <button id="sendBtn" type="button">发送</button>
+  </div>
+
+  <!-- 场景B 悬浮生命体 -->
+  <div id="wakePanel">
+    <div id="miniWrap">
+      <canvas id="miniNebula"></canvas>
+      <div id="miniRing"></div>
+    </div>
+    <div id="wakeInfo">
+      <div id="wakeReply">我在</div>
+      <div id="wakeStatus">正在聆听…</div>
+      <div id="wakeMic">说点什么试试</div>
+      <div id="wakeTimer"><div id="wakeTimerFill"></div></div>
+    </div>
+    <button id="wakeMore">继续说</button>
+  </div>
+
+  <audio id="sndAi" src="wake_src/ai.m4a" preload="auto"></audio>
+  <audio id="sndWo" src="wake_src/wo.mp3" preload="auto"></audio>
+
+  <script src="lifeform.js"></script>
+  <script src="native-bridge.js"></script>
+<script>
+(()=>{
+  "use strict";
+  const DPR = Math.min(window.devicePixelRatio||1, 2.5);
+
+  // ================= 版本 & 外接边界声明（冻结 v1.0） =================
+  const VERSION = '1.0';                         // 冻结封存版本：UI/交互逻辑不再改动
+  // ── 本文件（Device Runtime / 模块3）的"外接边界" ──
+  // 【外接 · 必须来自真模型侧】以下端点经 bridge_proxy 同源转发到本机冻结 Core(8787)：
+  //     GET  /api/status  → { model, provider, tts_browser_mode, memories, asr_ready }
+  //     POST /api/chat    → 请求{text,age,channel,voice_meta,session_id} → {response,emotion,ignite,crisis}
+  //     POST /api/tts     → 请求{text} → {audio}（火山 vivi2.0 神经音 mp3）
+  // 【本地 · 不依赖模型】星云粒子(lifeform.js)、状态机、Web Speech ASR(浏览器端识别)、
+  //     本地唤醒音 ai.m4a/wo.mp3、全部 UI 渲染、倒计时/唤醒面板逻辑，均在设备端运行。
+  // ⚠️ 外接契约权威来源：MODULE_INTERFACES.md §1.3/§2.2（ResponsePackage / AudioHandle）。
+  //    模型升级时须保持下方 /api/* schema 稳定，或由桥接层 marshal 到该 schema（详见 FREEZE_v1.0.md）。
+  // ── 真模型客户端：直连本机冻结 Core（8787，Core V2.01 / LS V1.01）──
+  // 页面由 bridge_proxy.js 以 https 同源提供，/api/* 由代理转发到本机 8787；
+  // ?api=http://host:8787 可覆盖（仅 Mac 本机直接测 8787 时用，手机麦克风需 https）。
+  const _apiOverride = new URLSearchParams(location.search).get('api');
+  let API_BASE = _apiOverride || '';            // 默认可变：原生壳会通过 CiraNative 注入 Core 地址
+  // 原生壳拿到 getConfig().coreUrl 后回填（setCoreUrl 由 native-bridge.js 调用）
+  window.CIRA_SET_CORE_URL = function(u){ if(u) API_BASE = u; };
+  const CHILD_AGE = parseInt(new URLSearchParams(location.search).get('age')) || 8;
+  let TTS_NEURAL = true;                          // 由 /api/status 的 tts_browser_mode 决定
+  let MODEL_NAME = '';
+  const USE_API = true;                           // 真模型常驻本机
+  // 调试模式：URL 加 ?debug=1 才显示开发工具栏（5 个状态按钮）与模拟入口；面向用户默认隐藏
+  if(new URLSearchParams(location.search).get('debug')) document.body.classList.add('debug');
+  async function apiFetch(path, opts){
+    const ctrl = new AbortController();
+    const tid = setTimeout(()=>ctrl.abort(), (opts && opts.timeout) || 15000);
+    try{
+      const r = await fetch(API_BASE + path, Object.assign({}, opts, { signal: ctrl.signal }));
+      if(!r.ok) throw new Error('HTTP '+r.status);
+      return r;
+    } finally { clearTimeout(tid); }
+  }
+  // 【外接】探测真模型健康度（Core 8787）→ 决定 TTS 走神经音还是浏览器兜底；失败不影响本地交互
+  async function apiStatus(){
+    try{
+      const r = await apiFetch('/api/status', { method:'GET', timeout: 5000 });
+      const j = await r.json();
+      // tts_browser_mode=false → 后端神经 TTS(/api/tts)；true → 浏览器朗读兜底
+      TTS_NEURAL = (j.tts_browser_mode !== true);
+      MODEL_NAME = j.model || '';
+      console.log('[CIRA] 真模型就绪:', (j.provider||'')+' / '+(j.model||''), '· 长期记忆', j.memories, '条');
+    }catch(e){ console.warn('[CIRA] /api/status 不可达', e); }
+  }
+
+  // 会话：每设备一个 UUID，持久化在多轮记忆里
+  let SESSION_ID = localStorage.getItem('cira_session_id');
+  if(!SESSION_ID){
+    SESSION_ID = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : ('sess_'+Date.now()+'_'+Math.random().toString(36).slice(2));
+    try{ localStorage.setItem('cira_session_id', SESSION_ID); }catch(e){}
+  }
+
+  // ---- 音频：base64 → 播放 ----
+  function b64ToArrayBuffer(b64){
+    const bin = atob(b64); const len = bin.length;
+    const ab = new ArrayBuffer(len); const u8 = new Uint8Array(ab);
+    for(let i=0;i<len;i++) u8[i] = bin.charCodeAt(i);
+    return ab;
+  }
+  function playAudio(base64, format){
+    return new Promise(res=>{
+      try{
+        const ab = b64ToArrayBuffer(base64);
+        const blob = new Blob([ab], { type: format==='mp3' ? 'audio/mpeg' : 'audio/wav' });
+        const url = URL.createObjectURL(blob);
+        const a = new Audio(url); a.preload = 'auto';
+        a.onended = ()=>{ setTimeout(()=>URL.revokeObjectURL(url), 2000); res(true); };
+        a.onerror = ()=>{ URL.revokeObjectURL(url); res(false); };
+        a.play().catch(()=>{ URL.revokeObjectURL(url); res(false); });
+      }catch(e){ res(false); }
+    });
+  }
+  function webTTS(text){
+    return new Promise(res=>{
+      try{
+        const u = new SpeechSynthesisUtterance(text || '');
+        u.lang = 'zh-CN';
+        u.onend = ()=>res(true); u.onerror = ()=>res(false);
+        speechSynthesis.cancel(); speechSynthesis.speak(u);
+      }catch(e){ res(false); }
+    });
+  }
+
+  // ---- 麦克风 PCM 采集（16-bit / 16k / 单声道） ----
+  // ---- 语音输入：浏览器端 Web Speech API 做 ASR，结果送 /api/chat ----
+  // 注意：Web Speech API 需安全上下文（https 或 localhost），手机走 bridge_proxy 的 https 即可。
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let recognizer = null, recognizing = false;
+  let finalTranscript = '', interimTranscript = '';
+  let recChannel = 'voice';     // 本次识别的来源频道（voice=语音 / text=文字）
+  function buildRecognizer(){
+    if(!SR) return null;
+    const rec = new SR();
+    rec.lang = 'zh-CN';
+    rec.continuous = false;
+    rec.interimResults = true;
+    rec.onstart = ()=>{ recognizing = true; lf.setAudioLevel(0.85); };
+    rec.onresult = (e)=>{
+      interimTranscript = '';
+      for(let i=e.resultIndex; i<e.results.length; i++){
+        const res = e.results[i];
+        if(res.isFinal) finalTranscript += res[0].transcript;
+        else interimTranscript += res[0].transcript;
+      }
+      const heard = finalTranscript + interimTranscript;
+      if(wakeActive){
+        // 唤醒态：把实时识别显示到悬浮面板，让用户看到"真的在听"
+        wakeStatus.textContent = heard ? '听到：「'+heard+'」' : '正在聆听…';
+      } else {
+        mainCaption.classList.add('show');
+        mcStatus.textContent = '我在听…「' + heard + '」';
+      }
+    };
+    rec.onerror = (e)=>{
+      console.warn('[CIRA] SR error:', e.error);
+      if(wakeActive) wakeStatus.textContent = (e.error==='not-allowed')
+        ? '需要麦克风权限，请在浏览器允许'
+        : '没听清，再说一次？';
+    };
+    rec.onend = ()=>{
+      recognizing = false; lf.setAudioLevel(0.3);
+      const txt = (finalTranscript + interimTranscript).trim();
+      finalTranscript = ''; interimTranscript = '';
+      if(txt){ wakeEmptyRetries=0; onSpeechFinal(txt); }
+      else if(wakeActive && wakeEmptyRetries<1){
+        // 没听到有效内容：再给一次聆听机会（最多一次），否则交给倒计时自动收起
+        wakeEmptyRetries++;
+        startWakeListening();
+      }
+    };
+    return rec;
+  }
+  function startRecognizer(channel){
+    if(!SR) return false;
+    recChannel = channel;
+    if(!recognizer) recognizer = buildRecognizer();
+    if(recognizing) return true;
+    try{ recognizer.start(); }catch(_){ return false; }
+    return true;
+  }
+  function stopRecognizer(){ if(recognizer && recognizing){ try{ recognizer.stop(); }catch(_){} } }
+  // 语音识别到一句完整的话 → 路由到对应模式
+  function onSpeechFinal(text){
+    if(turnBusy) return;
+    if(wakeActive) runTurnFromText(text, 'wake', { voice:true });
+    else runTurnFromText(text, 'push', { voice:true });
+  }
+
+  // ---------- 光生命体引擎 (与 v0.7 同款) ----------
+  const nebula = document.getElementById('nebula');
+  const mini   = document.getElementById('miniNebula');
+  const lf     = new LightLifeform(nebula, { fullscreen:true });
+  const miniLf = new LightLifeform(mini);   // 场景B：圆内小星云
+  miniLf.setEmotion('comfort');
+  lf.setDensity(1.45);     // 更密的星云
+  miniLf.setDensity(1.25);
+
+  // ---------- 状态机 ----------
+  const STATE = { IDLE:'idle', LISTEN:'listening', THINK:'thinking', SPEAK:'speaking', WAKE:'wake' };
+  let state = STATE.IDLE;
+  let stateUntil = 0;
+  let talkT1 = null, talkT2 = null;   // 按住说话自动流转的定时器(供预览条清除)
+  const stateText = document.getElementById('stateText');
+  const label = { idle:'待机', listening:'聆听', thinking:'思考', speaking:'回应', wake:'唤醒' };
+  const emotionOf = { idle:'calm', listening:'curious', thinking:'thinking', speaking:'happy', wake:'comfort' };
+  function setState(s, holdMs){
+    state = s; stateText.textContent = label[s]||s;
+    lf.setState(s);
+    miniLf.setState(s);
+    if(emotionOf[s]){ lf.setEmotion(emotionOf[s]); miniLf.setEmotion(emotionOf[s]); }
+    if(holdMs) stateUntil = performance.now()+holdMs;
+  }
+
+  // ---------- 触碰引力：星云被手指吸引，朝落点汇聚 ----------
+  // 按下=由近及远缓慢吸引(逐粒缓动汇入)；移动=引力点跟随；松手=缓慢落回原轨道(环绕星群)
+  let touching = false;
+  function touchXY(e){ return { x: e.clientX, y: e.clientY }; }
+
+  nebula.addEventListener('pointerdown', e=>{
+    touching = true;
+    const p = touchXY(e);
+    lf.setAttractor(p.x, p.y);
+  });
+  nebula.addEventListener('pointermove', e=>{
+    if(!touching) return;
+    const p = touchXY(e);
+    lf.setAttractor(p.x, p.y);   // 引力点随手指移动
+  });
+  function endTouch(){ if(touching){ touching = false; lf.clearAttractor(); } }
+  nebula.addEventListener('pointerup', endTouch);
+  nebula.addEventListener('pointercancel', endTouch);
+  nebula.addEventListener('pointerleave', endTouch);
+
+  // ---------- 按住说话（场景A：主动对话，绝不说“哎/我在”） ----------
+  // 按住=开始语音识别；松手=停止识别，识别到一句话即送 /api/chat。与场景B“语音唤醒”完全独立。
+  const talkBtn=document.getElementById('talkBtn');
+  const mainCaption=document.getElementById('mainCaption');
+  const mcStatus=mainCaption.querySelector('.mc-status');
+  const mcReply=mainCaption.querySelector('.mc-reply');
+  const mainText=document.getElementById('mainText');
+  const sendBtn=document.getElementById('sendBtn');
+  const responseArea=document.getElementById('responseArea');
+  const responseBubble=document.getElementById('responseBubble');
+  if(!SR){                                            // 浏览器不支持语音输入（如 iPhone Safari）
+    talkBtn.style.display='none';
+    mainCaption.classList.add('show');
+    mcStatus.textContent='当前浏览器不支持语音输入，请直接打字（CIRA 仍会朗读回应）';
+  }
+  function startTalk(){
+    if(!SR) return;
+    if(turnBusy) return;
+    if(wakeActive) hideWake();                        // 若悬浮面板开着，切主屏对话先收起它
+    convMode='push';
+    setState(STATE.LISTEN);
+    talkBtn.classList.add('listening');
+    talkBtn.innerHTML='聆听<br>中…';
+    mainCaption.classList.add('show');
+    mcStatus.textContent='我在听…（说完松手发送）';
+    mcReply.textContent='';
+    startRecognizer('voice');                         // 开始浏览器端语音识别
+  }
+  function endTalk(){
+    talkBtn.classList.remove('listening');
+    talkBtn.innerHTML='按住<br>说话';
+    if(convMode!=='push') return;
+    stopRecognizer();                                // 停止识别→onend 拿到整句→跑真实模型
+  }
+  talkBtn.addEventListener('pointerdown', e=>{e.preventDefault(); startTalk();});
+  talkBtn.addEventListener('pointerup', endTalk);
+  talkBtn.addEventListener('pointercancel', endTalk);
+
+  // ---------- 常驻文字框：直接提交跑真实模型（独立于麦克风） ----------
+  function sendMainText(){
+    const text=(mainText.value||'').trim();
+    if(!text) return;
+    mainText.value='';
+    // 唤醒中→作为唤醒轮(显示到悬浮面板，保持唤醒)；否则→主屏主动对话(push，显示主屏气泡)
+    runTurnFromText(text, wakeActive ? 'wake' : 'push');
+  }
+  sendBtn.addEventListener('click', sendMainText);
+  mainText.addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); sendMainText(); } });
+
+  // ---------- 场景B 悬浮对话：真实模型链路（唤醒→聆听→思考→回应） ----------
+  // 直连本机冻结 Core(8787)：浏览器端 Web Speech 做 ASR，文字送 /api/chat(Core)，
+  // 回应经 /api/tts(volcano 神经音) 播放；emotion/ignite/crisis 由 Core 返回驱动星云。
+  // 注：纯 http 下手机浏览器禁麦克风(Web Speech 需安全上下文)，走 bridge_proxy 的 https 即解锁真语音；
+  //     不支持语音输入的浏览器(如 iPhone Safari)自动降级为文字输入，文字同样走真实模型。
+  const wakePanel=document.getElementById('wakePanel');
+  const wakeFill=document.getElementById('wakeTimerFill');
+  const wakeReply=document.getElementById('wakeReply');
+  const wakeStatus=document.getElementById('wakeStatus');
+  const wakeMic=document.getElementById('wakeMic');
+  const wakeMore=document.getElementById('wakeMore');
+  const sndAi=document.getElementById('sndAi');
+  const sndWo=document.getElementById('sndWo');
+
+  let wakeActive=false;                 // 悬浮是否激活
+  let convMode=null;                    // 'push'=场景A按住说话；'wake'=场景B语音唤醒
+  let turnBusy=false;                   // 防一轮重复触发
+  let currentChannel='voice';          // 当前回合输入频道（runTurnFromText 设置）
+  let wakePhase='idle';                 // idle / listen / think / speak
+  let wakeCountdown=null;               // 聆听倒计时（超时无有效输入则自动消失）
+  let wakeEmptyRetries=0;               // 连续空识别次数（防止无限重启识别）
+
+  // 语音识别改由浏览器端 Web Speech API 完成（见 buildRecognizer，上方），不再用 PCM 采集 + VAD；
+  // 本机 8787 冻结 Core 只收文字。
+  // 唤醒态的持续聆听：每次开启都带一个倒计时，超时无有效输入且文本框为空 → 自动消失。
+  function startWakeCountdown(ms){
+    clearTimeout(wakeCountdown);
+    // 进度条：从满到空
+    wakeFill.style.transition='none'; wakeFill.style.transform='scaleX(1)';
+    void wakeFill.offsetWidth;  // 触发 reflow 重置
+    wakeFill.style.transition='transform '+ms+'ms linear';
+    wakeFill.style.transform='scaleX(0)';
+    wakeCountdown = setTimeout(()=>{
+      if(!wakeActive) return;
+      // 倒计时结束：没有有效语音、也没有文字输入 → 自动收起悬浮面板
+      if(!finalTranscript.trim() && !mainText.value.trim()){
+        wakeStatus.textContent='没听到，先不打扰你啦';
+        hideWake();
+      }
+    }, ms);
+  }
+  function startWakeListening(){
+    if(!wakeActive) return;
+    wakeStatus.textContent='正在聆听…';
+    wakeMic.textContent='对着手机说话试试';
+    startWakeCountdown(8000);          // 8 秒倒计时，到点无输入则自动消失
+    startRecognizer('voice');
+  }
+  function keepListening(){            // 唤醒态：重新开始聆听（倒计时一并重置）
+    if(!wakeActive) return;
+    startWakeListening();
+  }
+
+  function triggerWake(){
+    if(wakeActive){ keepListening(); return; }
+    wakeActive=true;
+    document.body.classList.add('wake-on');   // 标记唤醒态：文字框浮于悬浮面板之上
+    convMode='wake';                   // “语音唤醒”路径(说“哎/我在”+连续听)
+    setState(STATE.LISTEN);            // 唤醒即进入聆听子状态
+    wakePanel.classList.add('show');
+    wakePhase='listen';
+    wakeEmptyRetries=0;
+    const which = Math.random()<0.5 ? 'ai' : 'wo';
+    wakeReply.textContent = which==='ai' ? '哎' : '我在';
+    wakeStatus.textContent='正在聆听…';
+    wakeMic.textContent='对着手机说话试试';
+    // 唤醒应答：本地音频资产（无服务端 wake 端点）；播完再开麦，避免抢占麦克风
+    const a=which==='ai'?sndAi:sndWo;
+    if(a){
+      a.currentTime=0;
+      a.play().catch(()=>{});
+      a.addEventListener('ended', ()=>startWakeListening(), { once:true });
+      // 兜底：音频异常没触发 ended 时，1.2s 后也开麦
+      setTimeout(()=>{ if(wakeActive && !recognizing) startWakeListening(); }, 1200);
+    } else {
+      startWakeListening();
+    }
+  }
+  const delay = ms => new Promise(r=>setTimeout(r, ms));
+  // 常驻文字框直接提交：已有文本，跳过 ASR/输入弹窗，直接跑真实模型
+  function showCrisis(){
+    let b=document.getElementById('crisisBanner');
+    if(!b){
+      b=document.createElement('div'); b.id='crisisBanner';
+      b.style.cssText='position:fixed;left:12px;right:12px;top:12px;z-index:50;background:#fdeaea;color:#d64545;border:1px solid #f3c6c6;border-radius:12px;padding:12px 16px;font-size:13.5px;line-height:1.6;';
+      document.body.appendChild(b);
+    }
+    b.innerHTML='⚠️ <b>安全协议已触发</b>（高风险信号）。真实产品中此刻会立即通知家长。危机资源：110 / 120 / 全国24小时心理援助热线 12356';
+    b.style.display='block';
+    setTimeout(()=>{ b.style.display='none'; }, 8000);
+  }
+
+  // 文字/语音统一入口：已拿到文本，跳过 ASR，直接跑真实模型
+  async function runTurnFromText(text, mode, opts){
+    if(turnBusy) return;
+    turnBusy = true;
+    opts = opts || {};
+    currentChannel = opts.voice ? 'voice' : 'text';
+    if(mode==='wake'){ clearTimeout(wakeCountdown); wakeCountdown=null; }  // 一轮开始即停倒计时，避免思考/播报中被误关
+    const ui = (mode==='push')
+      ? { status:mcStatus, reply:responseBubble }
+      : { status:wakeStatus, reply:wakeReply };
+    if(mode==='push'){ mainCaption.classList.add('show'); responseBubble.classList.remove('show'); }
+    if(mode==='wake') wakeMic.textContent='我在听…';
+    setState(STATE.THINK);
+    let dotN = 0;
+    ui.status.textContent = '我听到：「'+text+'」';
+    // 思考期活动指示：模型要 ~15–23s，用"思考…"动画点避免像卡死
+    const thinkTimer = setInterval(()=>{
+      dotN = (dotN+1)%4;
+      ui.status.textContent = '我听到：「'+text+'」 思考'+'·'.repeat(dotN);
+    }, 360);
+    await delay(500);
+    let emotion='comfort', ignite=null, replyText='', crisis=false;
+    try{
+      // 【外接】POST /api/chat → 冻结 Core 思考，返回 reply + emotion/ignite/crisis 驱动星云
+      const r = await apiFetch('/api/chat', { method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ text, age: CHILD_AGE, channel: currentChannel,
+          voice_meta: opts.voice ? { source:'web-speech-api' } : {}, session_id: SESSION_ID }),
+        timeout: 30000 });
+      const j = await r.json();
+      if(j.response) replyText = j.response;
+      if(j.emotion) emotion = j.emotion;
+      if(j.ignite) ignite = j.ignite;
+      if(j.crisis) crisis = true;
+    }catch(e){ console.warn('[CIRA] /api/chat 失败', e); }
+    clearInterval(thinkTimer);
+    lf.setEmotion(emotion); miniLf.setEmotion(emotion);
+    if(ignite){ lf.pulse(); miniLf.pulse(); }
+    if(crisis) showCrisis();
+    wakePhase='speak'; setState(STATE.SPEAK);
+    ui.reply.textContent = replyText || text;
+    if(mode==='push') ui.reply.classList.add('show');  // 气泡淡入
+    ui.status.textContent = '回应中…';
+    let ok=false;
+    if(TTS_NEURAL && replyText){
+      try{
+        // 【外接】POST /api/tts → 冻结 LS 火山神经音合成，返回 {audio} 由设备端播放
+        const r = await apiFetch('/api/tts', { method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ text: replyText }), timeout: 15000 });
+        const j = await r.json();
+        if(j && j.audio) ok = await playAudio(j.audio, 'mp3');
+      }catch(e){ console.warn('[CIRA] /api/tts 失败', e); }
+    }
+    if(!ok) ok = await webTTS(replyText || text || '我刚才走神了');
+    turnBusy=false;
+    if(mode==='wake') backToListen(); else endPushTurn();
+  }
+  function backToListen(){                    // 场景B：回应后回到连续聆听
+    if(!wakeActive){ endPushTurn(); return; }
+    setState(STATE.LISTEN); wakeEmptyRetries=0;
+    startWakeListening();                     // 重置倒计时并继续听下一句
+  }
+  function endPushTurn(){                      // 场景A 按住说话：一轮结束，回就绪态(不自动连续听)
+    wakePhase='idle';
+    setState(STATE.IDLE);
+    mcStatus.textContent='按「按住说话」再聊一句';
+    // mcReply 不再使用（push 回复已走 responseBubble）；mainCaption 仅保留紧凑状态提示
+    mainCaption.classList.remove('show');
+    // 由用户再次按住才触发下一轮；convMode 仍为 'push'
+  }
+  function hideWake(){
+    // 用户在打字、或输入框里还有内容时，不退出唤醒（保留文字窗口、不中断对话）
+    if(mainText.value.trim() || document.activeElement===mainText) return;
+    wakeActive=false; convMode=null;
+    document.body.classList.remove('wake-on');
+    clearTimeout(wakeCountdown); wakeCountdown=null;
+    if(recognizing) stopRecognizer();
+    wakePanel.classList.remove('show');
+    setState(STATE.IDLE);
+  }
+  document.getElementById('wakeFab').addEventListener('click', triggerWake);
+  document.getElementById('wakeMore').addEventListener('click', ()=>{ if(wakeActive) keepListening(); });
+
+  // ---------- 状态预览条(开发用)：点哪个停在哪个，不被说话流转覆盖 ----------
+  const devBar = document.getElementById('devBar');
+  const devBtns = devBar.querySelectorAll('button');
+  function previewState(s){
+    if(talkT1){ clearTimeout(talkT1); talkT1=null; }
+    if(talkT2){ clearTimeout(talkT2); talkT2=null; }
+    if(s===STATE.WAKE) triggerWake();
+    else setState(s);
+    devBtns.forEach(b=> b.classList.toggle('on', b.dataset.s===s));
+  }
+  devBtns.forEach(b=> b.addEventListener('click', ()=> previewState(b.dataset.s)));
+
+  // 启动：拉取真模型状态（模型名 / 长期记忆条数 / TTS 模式）
+  apiStatus();
+
+  // ---------- 首次打开引导（onboarding） ----------
+  // 新用户给一个脉冲提示，告诉 ta 怎么玩；首次交互即收起，之后不再出现（记到 localStorage）。
+  const welcomeHint = document.getElementById('welcomeHint');
+  function hideWelcome(){ if(welcomeHint) welcomeHint.classList.add('hide'); try{ localStorage.setItem('cira_seen','1'); }catch(_){} }
+  if(welcomeHint && !localStorage.getItem('cira_seen')) welcomeHint.classList.add('show');
+  if(nebula){ nebula.addEventListener('pointerdown', hideWelcome, { once:true }); }
+  talkBtn.addEventListener('pointerdown', hideWelcome, { once:true });
+  sendBtn.addEventListener('click', hideWelcome, { once:true });
+  mainText.addEventListener('focus', hideWelcome, { once:true });
+  document.getElementById('wakeFab').addEventListener('click', hideWelcome, { once:true });
+  // 开场问候脉冲：让星云一上来就"活"着，而不是静止
+  setTimeout(()=>{ try{ lf.pulse(); miniLf.pulse(); }catch(_){} }, 600);
+
+  document.addEventListener('gesturestart', e=>e.preventDefault());
+
+  // ---------- 原生壳集成钩子（Capacitor 真 App）----------
+  // 把关键入口暴露给原生桥 window.CIRA，原生唤醒词命中即调用 triggerWake() 进入聆听。
+  window.CIRA = {
+    triggerWake: triggerWake,
+    startWakeListening: startWakeListening,
+    setState: setState,
+    getWakePhase: function(){ return wakePhase; },
+    isWakeActive: function(){ return wakeActive; },
+    setCoreUrl: function(u){ if(u) API_BASE = u; }
+  };
+  // 状态切换统一回传原生（联动浮窗/前台保活）。轻量、异常安全。
+  var _ciraOrigSetState = setState;
+  setState = function(s, holdMs){ _ciraOrigSetState(s, holdMs); if(window.CiraNative){ try{ window.CiraNative.reportState(s); }catch(_){} } };
+
+  // ---------- ?overlay=1 浮窗模式（系统级悬浮窗内加载）----------
+  if(new URLSearchParams(location.search).get('overlay')){
+    ['statebar','talkWrap','responseArea','welcomeHint','wakeFab','wakePanel','textDock','devBar'].forEach(function(id){
+      var el=document.getElementById(id); if(el) el.style.display='none';
+    });
+    document.body.style.background='transparent';
+    var _nebOv=document.getElementById('nebula'); if(_nebOv) _nebOv.style.background='transparent';
+    if(nebula){ nebula.addEventListener('pointerdown', function(){ if(window.CiraNative) window.CiraNative.openMain(); }); }
+  }
+})();
+</script>
+</body>
+</html>
