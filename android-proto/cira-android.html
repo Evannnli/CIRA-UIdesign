@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<title>CIRA · 安卓原型 v0.9.1</title>
+<title>CIRA · 安卓原型 v1.0（冻结版）</title>
 <style>
   :root{
     --ink:#f6e9dc;
@@ -197,9 +197,17 @@
   "use strict";
   const DPR = Math.min(window.devicePixelRatio||1, 2.5);
 
-  // ================= 桥接服务配置（接真模型用） =================
-  // BASE 留空 = 离线占位模式（用本地 ai.m4a/wo.mp3 + 硬编码文案）。
-  // BASE 留空 = 走真实调用（同源经 bridge_proxy 到本机 8787 冻结 Core）；离线占位模式已废弃。
+  // ================= 版本 & 外接边界声明（冻结 v1.0） =================
+  const VERSION = '1.0';                         // 冻结封存版本：UI/交互逻辑不再改动
+  // ── 本文件（Device Runtime / 模块3）的"外接边界" ──
+  // 【外接 · 必须来自真模型侧】以下端点经 bridge_proxy 同源转发到本机冻结 Core(8787)：
+  //     GET  /api/status  → { model, provider, tts_browser_mode, memories, asr_ready }
+  //     POST /api/chat    → 请求{text,age,channel,voice_meta,session_id} → {response,emotion,ignite,crisis}
+  //     POST /api/tts     → 请求{text} → {audio}（火山 vivi2.0 神经音 mp3）
+  // 【本地 · 不依赖模型】星云粒子(lifeform.js)、状态机、Web Speech ASR(浏览器端识别)、
+  //     本地唤醒音 ai.m4a/wo.mp3、全部 UI 渲染、倒计时/唤醒面板逻辑，均在设备端运行。
+  // ⚠️ 外接契约权威来源：MODULE_INTERFACES.md §1.3/§2.2（ResponsePackage / AudioHandle）。
+  //    模型升级时须保持下方 /api/* schema 稳定，或由桥接层 marshal 到该 schema（详见 FREEZE_v1.0.md）。
   // ── 真模型客户端：直连本机冻结 Core（8787，Core V2.01 / LS V1.01）──
   // 页面由 bridge_proxy.js 以 https 同源提供，/api/* 由代理转发到本机 8787；
   // ?api=http://host:8787 可覆盖（仅 Mac 本机直接测 8787 时用，手机麦克风需 https）。
@@ -220,6 +228,7 @@
       return r;
     } finally { clearTimeout(tid); }
   }
+  // 【外接】探测真模型健康度（Core 8787）→ 决定 TTS 走神经音还是浏览器兜底；失败不影响本地交互
   async function apiStatus(){
     try{
       const r = await apiFetch('/api/status', { method:'GET', timeout: 5000 });
@@ -543,6 +552,7 @@
     await delay(500);
     let emotion='comfort', ignite=null, replyText='', crisis=false;
     try{
+      // 【外接】POST /api/chat → 冻结 Core 思考，返回 reply + emotion/ignite/crisis 驱动星云
       const r = await apiFetch('/api/chat', { method:'POST',
         headers:{'Content-Type':'application/json'},
         body: JSON.stringify({ text, age: CHILD_AGE, channel: currentChannel,
@@ -565,6 +575,7 @@
     let ok=false;
     if(TTS_NEURAL && replyText){
       try{
+        // 【外接】POST /api/tts → 冻结 LS 火山神经音合成，返回 {audio} 由设备端播放
         const r = await apiFetch('/api/tts', { method:'POST',
           headers:{'Content-Type':'application/json'},
           body: JSON.stringify({ text: replyText }), timeout: 15000 });
