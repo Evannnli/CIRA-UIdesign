@@ -52,6 +52,12 @@ public class VoskAsrEngine {
 
     private static final String MODEL_ASSET = "models/vosk-model-small-cn-0.22";
     private static final String MODEL_DIR = "vosk/vosk-model-small-cn-0.22";
+    /**
+     * 缓存版本指纹：每次改动拷贝逻辑或更换模型时必须递增此值。
+     * 作用：覆盖安装新 APK 后，若指纹不匹配 → 强制删除旧缓存并从新 assets 重拷，
+     * 彻底解决"aapt 压缩截断的旧缓存被大小校验(>1MB)误判为有效而永久复用"的问题。
+     */
+    private static final String CACHE_STAMP = "v2";
 
     public VoskAsrEngine(Context ctx) {
         this.ctx = ctx.getApplicationContext();
@@ -65,16 +71,30 @@ public class VoskAsrEngine {
     private void copyModelIfNeeded() throws IOException {
         File outDir = new File(ctx.getFilesDir(), MODEL_DIR);
         File finalMdl = new File(outDir, "am/final.mdl");
-        // 完整性校验：sentinel 存在 且 final.mdl 存在且大小合理(>1MB) 才复用，否则强制重拷，
-        // 避免覆盖安装/拷贝中断留下的"假拷贝"导致 Vosk 加载出空模型、识别不出任何字。
-        if (new File(outDir, ".copied").exists() && finalMdl.exists() && finalMdl.length() > 1024 * 1024) return;
+        File stampFile = new File(outDir, ".cache_stamp");
+        // 完整性校验（三层守卫）：
+        //   ① .copied sentinel 存在 ② final.mdl 存在且 >1MB ③ 缓存版本指纹匹配
+        // 任一不满足 → 删旧缓存、从当前 APK assets 重拷。
+        // v2 指纹：修复 aapt 压缩截断旧缓存被"大小>1MB"误判为有效而永久复用的 bug。
+        String currentStamp = CACHE_STAMP;
+        String cachedStamp = "";
+        if (stampFile.exists()) {
+            try { cachedStamp = new String(java.nio.file.Files.readAllBytes(stampFile.toPath())).trim(); } catch(Exception ignored) {}
+        }
+        boolean stampOk = currentStamp.equals(cachedStamp);
+        if (new File(outDir, ".copied").exists() && finalMdl.exists()
+                && finalMdl.length() > 1024 * 1024 && stampOk) return;
+        // 缓存失效 → 清除旧数据重拷
         if (outDir.exists()) deleteRecursively(outDir);
         outDir.mkdirs();
         copyAssetFolder(ctx.getAssets(), MODEL_ASSET, outDir);
         if (!finalMdl.exists() || finalMdl.length() < 1024 * 1024) {
-            throw new IOException("Vosk 模型拷贝不完整：am/final.mdl 缺失或过小");
+            throw new IOException("Vosk 模型拷贝不完整：am/final.mdl 缺失或过小"
+                + " (实际大小=" + (finalMdl.exists() ? finalMdl.length() : -1) + "字节)");
         }
         new File(outDir, ".copied").createNewFile();
+        // 写入缓存指纹，供下次启动/覆盖安装后比对
+        java.nio.file.Files.write(stampFile.toPath(), currentStamp.getBytes());
     }
 
     private void copyAssetFolder(AssetManager am, String src, File dst) throws IOException {
