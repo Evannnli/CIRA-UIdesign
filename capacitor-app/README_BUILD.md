@@ -3,6 +3,11 @@
 > 目标：把"Web 星云原型（v1.0 冻结版）"封装成**真正的安卓 App**，解决浏览器做不到的三件事——
 > **① 后台常驻运行　② 熄屏/后台语音唤醒　③ 系统级悬浮于其它 App 顶层**。
 > 路线依据：`PROJECT_CONTEXT.md` §三 / §六（Capacitor 原生壳，ESP32 硬件路线暂停）。
+>
+> ⚠️ **关键架构约束（踩坑结论）**：Android **WebView 不实现 Web Speech API**（浏览器原型用的识别方式）。
+> 因此在原生 App 里"聆听"必须走**原生离线 ASR（Vosk）**，由原生层识别文字后回传给 Web 对话流程；
+> 否则 `window.SpeechRecognition` 在 WebView 里是 `undefined`，代码会直接把"按住说话"按钮隐藏——表现就是"装好了但调不动麦克风/硬件"。
+> Web 层在 Capacitor 环境下自动改用 `CiraNative.startAsr/stopAsr`，纯浏览器调试仍走 Web Speech（回退）。
 
 ---
 
@@ -21,11 +26,12 @@ capacitor-app/
 │   └── app/src/main/
 │       ├── java/com/cira/runtime/
 │       │   ├── MainActivity.java          # 注册插件 + 允许 WebView 混合内容
-│       │   ├── CiraRuntimePlugin.java      # JS↔原生 桥（唤醒/浮窗/保活/权限/配置）
+│       │   ├── CiraRuntimePlugin.java      # JS↔原生 桥（唤醒/浮窗/保活/权限/配置/ASR）
 │       │   ├── CiraForegroundService.java   # 前台服务 + WakeLock + 跑唤醒词
 │       │   ├── CiraOverlayService.java      # SYSTEM_ALERT_WINDOW 顶层浮窗（小星云）
 │       │   ├── BootReceiver.java            # 开机重启后台唤醒
-│       │   └── wake/PorcupineWakewordEngine.java  # 离线唤醒词（Picovoice）
+│       │   ├── wake/PorcupineWakewordEngine.java  # 离线唤醒词（Picovoice）
+│       │   └── asr/VoskAsrEngine.java       # 离线语音识别（Vosk，替代 Web Speech API）
 │       ├── res/layout/overlay_window.xml   # 浮窗布局
 │       ├── res/drawable/ic_stat_notify.xml # 前台通知图标
 │       └── AndroidManifest.xml             # 权限 / 服务 / 接收器
@@ -104,6 +110,10 @@ cd capacitor-app/android
 
 > 代理端口会变（会话级），以 `echo $HTTPS_PROXY` 当前值替换 `52190` 即可。
 > 若换到无代理的纯净网络，删掉 `GRADLE_OPTS` 里的 `-D*proxy*` 段即可直连。
+>
+> 💡 **提速经验（本机实测）**：同一台 Mac 上可能同时存在多个可用代理端口（如 `55181` 与 `7897`）。
+> 本机实测 `7897` 比 `55181` 快约 4–5 倍（alphacephei 模型下载 306 KB/s vs 68 KB/s）。
+> 大文件下载或 Gradle 拉包前，**先用 `curl -x http://127.0.0.1:<port> -r 0-2000000 -o /dev/null -w "%{speed_download}"` 探速**，挑快的那个用。
 
 ---
 
@@ -148,8 +158,9 @@ HyperOS 对后台/浮窗限制极严，**光在 App 里点"允许"不够**，必
 
 ## 7. 已知限制 / 待验证
 
-- [x] 本工程**已于 2026-08-17 在本机（macOS arm64）成功编译出 `app-debug.apk`**（6.1 MB，compileSdk 36）。
+- [x] 本工程**已于 2026-08-17 在本机（macOS arm64）成功编译出 `app-debug.apk`**（compileSdk 36）。
   - Porcupine `3.0.1` 解析正常；其 `setKeywordPath` 仅接受 `String` 文件路径（已用"拷贝 raw→文件"实现，见 `wake/PorcupineWakewordEngine.java`）。
+  - **新增 Vosk 离线 ASR**（`com.alphacephei:vosk-android:0.3.47` + 中文模型 `vosk-model-small-cn-0.22` 打进 `assets/models/`）：替代 WebView 缺失的 Web Speech API，是"App 内能真正听清用户说话"的关键。APK 因含模型约 ~46 MB。
   - AGP 8.13 + Gradle 8.14.3 自洽；**需 JDK 21**、且 **Gradle 必须显式走代理**（见 §3.5）。
 - [ ] 浮窗 WebView 加载的是 `file:///android_asset/public/index.html`（`?overlay=1`），与 Capacitor 主 WebView 是两套实例，状态不共享（符合设计：浮窗只显示小星云 + 点击回主界面）。
 - [ ] `?overlay=1` 模式下目前只显示星云 + 点击回主界面；如需在浮窗里直接对话，需在 `index.html` 的 overlay 分支补迷你对话 UI。

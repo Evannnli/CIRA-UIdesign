@@ -32,6 +32,16 @@
       return plugin ? plugin.stopWakeword() : Promise.resolve();
     },
 
+    // 启动原生离线语音识别（Vosk），识别结果通过 asrPartial/asrFinal 事件回传
+    startAsr: function () {
+      return plugin ? plugin.startAsr() : Promise.resolve();
+    },
+
+    // 停止原生语音识别
+    stopAsr: function () {
+      return plugin ? plugin.stopAsr() : Promise.resolve();
+    },
+
     // 显示系统级浮窗（顶层悬浮星云）
     showOverlay: function () {
       return plugin ? plugin.showOverlay() : Promise.resolve();
@@ -80,6 +90,24 @@
     } catch (e) {
       console.warn('[CIRA] 唤醒回调失败', e);
     }
+  });
+
+  // ---- 原生 → Web：离线识别结果 ----
+  // asrPartial：实时中间结果（用于"正在听…「xxx」"的即时反馈）
+  // asrFinal：一句完整识别（送入对话流程，等同说了一句话）
+  CiraNative.on('asrPartial', function (payload) {
+    try {
+      if (window.CIRA && typeof window.CIRA.onNativeInterim === 'function') {
+        window.CIRA.onNativeInterim(payload && payload.text);
+      }
+    } catch (e) {}
+  });
+  CiraNative.on('asrFinal', function (payload) {
+    try {
+      if (window.CIRA && typeof window.CIRA.onNativeTranscript === 'function') {
+        window.CIRA.onNativeTranscript(payload && payload.text);
+      }
+    } catch (e) {}
   });
 
   // ---- Web → 原生：状态回传 ----

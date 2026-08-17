@@ -50,8 +50,9 @@
 - 🟡 **联调可移植性 / 桥地址解析（2026-08-14）**：`bridge_proxy.js` 桥地址解析优先级 = 环境变量 `CIRA_BRIDGE` > 同目录 `bridge_target.txt`（一行 URL）> 默认 `http://127.0.0.1:8787`（本机真模型）。启动日志用 `lanIP()` 动态打印本机新 LAN IP，换网络不用手改。**2026-08-14 实测跑通**：真模型就在本机 8787，无需内网穿透/远程桥，默认真桥即可。先前规划的"家里桥机 Cloudflare Tunnel"方案已不再需要（模型与本机同源）。`mock_bridge.js`(:8000/现 8123) 仅作离线演示保留，勿与真模型混淆。
 - 🟢 **UX 升级 v0.1（2026-08-14 晚）**：纯前端、手机硬刷新即生效。① 首屏 onboarding 脉冲提示（#welcomeHint，首次交互后自动隐藏+记 localStorage）；② 开场星云问候脉冲；③ 模型思考 ~15–23s 等待期状态栏持续显示「我听到：「…」思考…」动画点，避免像卡死。后续 UX 方向待定（情绪↔星云映射审计 / 唤醒悬浮面板打磨 / 危机呈现 / 延迟体感）。
 - 🟢 **真 App 安卓壳已在本机出包（2026-08-17）**：`capacitor-app/`（Capacitor 8 安卓壳）把 v1.0 Web 星云封装为原生 App，
-  含前台保活服务 / Porcupine 离线唤醒词 / SYSTEM_ALERT_WINDOW 顶层浮窗 / JS↔原生桥。**本机（macOS arm64）已成功编译 `app-debug.apk`（6.1MB，compileSdk 36）**。
-  ⚠️ 关键环境坑已写入 `capacitor-app/README_BUILD.md` §3.5：**必须 JDK 21**（非17）+ **Gradle 必须显式走代理**（Gradle 不读 `HTTPS_PROXY` 环境变量，否则 `dl.google.com` 握手被掐）。工具链装在 `/Users/evanli/cira-sdk/`。
+  含前台保活服务 / Porcupine 离线唤醒词 / SYSTEM_ALERT_WINDOW 顶层浮窗 / JS↔原生桥 / **Vosk 离线语音识别**。**本机（macOS arm64）已成功编译 `app-debug.apk`（~89MB，含中文识别模型，compileSdk 36）**。
+  ⚠️ **关键架构坑（用户反馈"装好但调不动硬件"已定位修复）**：Android **WebView 不实现 Web Speech API**，原 Web 原型靠浏览器端 `SpeechRecognition` 做 ASR，在 App 的 WebView 里是 `undefined` → 代码把"按住说话"按钮直接隐藏。修复：新增 `asr/VoskAsrEngine.java`（离线 Vosk，中文模型 `vosk-model-small-cn-0.22` 打进 `assets/models/`），经 `CiraRuntimePlugin.startAsr/stopAsr` + `asrPartial/asrFinal` 事件回传文字给 Web 对话流程；纯浏览器调试仍走 Web Speech 回退。
+  ⚠️ 关键环境坑已写入 `capacitor-app/README_BUILD.md` §3.5：**必须 JDK 21**（非17）+ **Gradle 必须显式走代理**（Gradle 不读 `HTTPS_PROXY` 环境变量，否则 `dl.google.com` 握手被掐；多代理端口时挑快的 7897）。工具链装在 `/Users/evanli/cira-sdk/`。
   构建与小米15/HyperOS 授权清单见 `capacitor-app/README_BUILD.md`。
 - ⏸️ **硬件**：ST77916 黑屏根因已定位（QPI→标准 SPI 8-bit），修复已 commit 未 push；Mac 崩溃阻断验证。
 
@@ -76,7 +77,8 @@
    - `PorcupineWakewordEngine`（离线唤醒词，-v 3.0.1）解决**熄屏语音唤醒**；
    - `CiraOverlayService`（`SYSTEM_ALERT_WINDOW` 顶层浮窗，复用 `?overlay=1` 小星云）解决**顶层悬浮**；
    - `CiraRuntimePlugin` 暴露 JS↔原生桥（`window.CiraNative`/`window.CIRA`），唤醒命中经 `wakeword` 事件转 Web 的 `triggerWake()`。
-   - ✅ **已在本机（macOS arm64）成功编译出 `app-debug.apk`（6.1MB）**：需 JDK 21 + Gradle 显式走代理（见 `capacitor-app/README_BUILD.md` §3.5）。工具链 `/Users/evanli/cira-sdk/`。
+   - ✅ **已在本机（macOS arm64）成功编译出 `app-debug.apk`（~89MB，含 Vosk 中文模型）**：需 JDK 21 + Gradle 显式走代理（见 `capacitor-app/README_BUILD.md` §3.5，多代理端口挑快的 7897）。工具链 `/Users/evanli/cira-sdk/`。
+   - 🔧 **2026-08-17 晚补：原生离线 ASR（Vosk）替代 Web Speech**：Web 原型在 App 的 WebView 里 `SpeechRecognition` 为 undefined，导致"按住说话"按钮被隐藏、麦克风调不动。已加 `asr/VoskAsrEngine.java` + 插件 `startAsr/stopAsr` + Web 桥 `asrPartial/asrFinal`，Web 在 Capacitor 下自动改用原生识别。复装新版 APK 即可真听清说话。
    - 路线对照：浏览器 Web 原型 = `android-proto/cira-android.html`（v1.0 冻结）；原生封装版 = `capacitor-app/`（Web 层是同一套星云 UI 的副本，改 `www/` 后 `npx cap sync android`）。
 4. **硬件恢复**（可选）：Windows 笔记本或 USB-TTL 适配器到位后，续烧录验证。
 

@@ -7,6 +7,7 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.JSObject;
 
 import com.cira.runtime.BuildConfig;
+import com.cira.runtime.asr.VoskAsrEngine;
 
 import android.Manifest;
 import android.content.Context;
@@ -34,6 +35,7 @@ public class CiraRuntimePlugin extends Plugin {
 
     private ActivityResultLauncher<String[]> permLauncher;
     private PermissionCallback pendingCallback;
+    private VoskAsrEngine asr;            // 离线语音识别引擎（原生替代 Web Speech）
 
     private interface PermissionCallback {
         void onResult(Map<String, Boolean> result);
@@ -152,6 +154,43 @@ public class CiraRuntimePlugin extends Plugin {
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         ctx.startActivity(i);
         call.resolve();
+    }
+
+    // ---------- 离线语音识别（Vosk，替代 Web Speech API） ----------
+    @PluginMethod
+    public void startAsr(PluginCall call) {
+        Context ctx = getContext();
+        if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED) {
+            call.reject("mic_permission_required", "需要麦克风权限，请先调用 requestPermissions");
+            return;
+        }
+        try {
+            if (asr == null) {
+                asr = new VoskAsrEngine(ctx);
+                asr.setListener(new VoskAsrEngine.AsrListener() {
+                    @Override public void onPartial(String text) { emitAsr("asrPartial", text); }
+                    @Override public void onFinal(String text) { emitAsr("asrFinal", text); }
+                    @Override public void onError(String msg) { emitAsr("asrError", msg); }
+                });
+            }
+            asr.start();
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("asr_start_failed", e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void stopAsr(PluginCall call) {
+        if (asr != null) asr.stop();
+        call.resolve();
+    }
+
+    private void emitAsr(String event, String text) {
+        JSObject d = new JSObject();
+        d.put("text", text == null ? "" : text);
+        notifyListeners(event, d);
     }
 
     // ---------- Web → 原生：状态回传（仅记录，可扩展联动浮窗） ----------

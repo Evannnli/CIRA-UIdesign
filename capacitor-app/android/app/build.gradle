@@ -43,6 +43,8 @@ dependencies {
     implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
     // 离线唤醒词引擎（Picovoice Porcupine）。版本以 Maven Central 实际发布为准。
     implementation 'ai.picovoice:porcupine-android:3.0.1'
+    // 离线语音识别（Vosk）。替代 WebView 缺失的 Web Speech API，国行 HyperOS 也能用。
+    implementation 'com.alphacephei:vosk-android:0.3.47'
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
     implementation project(':capacitor-android')

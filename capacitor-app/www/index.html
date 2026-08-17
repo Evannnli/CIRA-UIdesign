@@ -285,6 +285,8 @@
   // ---- 语音输入：浏览器端 Web Speech API 做 ASR，结果送 /api/chat ----
   // 注意：Web Speech API 需安全上下文（https 或 localhost），手机走 bridge_proxy 的 https 即可。
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  // 原生壳（Capacitor）里 WebView 不实现 Web Speech API，改用原生离线识别（Vosk）。
+  let useNativeAsr = !!(window.CiraNative && window.CiraNative.available);
   let recognizer = null, recognizing = false;
   let finalTranscript = '', interimTranscript = '';
   let recChannel = 'voice';     // 本次识别的来源频道（voice=语音 / text=文字）
@@ -401,13 +403,13 @@
   const sendBtn=document.getElementById('sendBtn');
   const responseArea=document.getElementById('responseArea');
   const responseBubble=document.getElementById('responseBubble');
-  if(!SR){                                            // 浏览器不支持语音输入（如 iPhone Safari）
+  if(!SR && !useNativeAsr){                            // 浏览器不支持语音输入（如 iPhone Safari）且非原生壳
     talkBtn.style.display='none';
     mainCaption.classList.add('show');
     mcStatus.textContent='当前浏览器不支持语音输入，请直接打字（CIRA 仍会朗读回应）';
   }
   function startTalk(){
-    if(!SR) return;
+    if(!SR && !useNativeAsr) return;
     if(turnBusy) return;
     if(wakeActive) hideWake();                        // 若悬浮面板开着，切主屏对话先收起它
     convMode='push';
@@ -417,11 +419,13 @@
     mainCaption.classList.add('show');
     mcStatus.textContent='我在听…（说完松手发送）';
     mcReply.textContent='';
+    if(useNativeAsr){ CiraNative.startAsr(); return; } // 原生离线识别（替代 Web Speech）
     startRecognizer('voice');                         // 开始浏览器端语音识别
   }
   function endTalk(){
     talkBtn.classList.remove('listening');
     talkBtn.innerHTML='按住<br>说话';
+    if(useNativeAsr){ CiraNative.stopAsr(); return; } // 停止原生识别→asrFinal 事件回传整句
     if(convMode!=='push') return;
     stopRecognizer();                                // 停止识别→onend 拿到整句→跑真实模型
   }
@@ -486,6 +490,7 @@
     wakeStatus.textContent='正在聆听…';
     wakeMic.textContent='对着手机说话试试';
     startWakeCountdown(8000);          // 8 秒倒计时，到点无输入则自动消失
+    if(useNativeAsr){ CiraNative.startAsr(); return; } // 原生离线识别（唤醒态也走它）
     startRecognizer('voice');
   }
   function keepListening(){            // 唤醒态：重新开始聆听（倒计时一并重置）
@@ -610,6 +615,7 @@
     document.body.classList.remove('wake-on');
     clearTimeout(wakeCountdown); wakeCountdown=null;
     if(recognizing) stopRecognizer();
+    if(useNativeAsr) CiraNative.stopAsr();
     wakePanel.classList.remove('show');
     setState(STATE.IDLE);
   }
@@ -654,7 +660,15 @@
     setState: setState,
     getWakePhase: function(){ return wakePhase; },
     isWakeActive: function(){ return wakeActive; },
-    setCoreUrl: function(u){ if(u) API_BASE = u; }
+    setCoreUrl: function(u){ if(u) API_BASE = u; },
+    // 原生离线识别回传：一句完整识别 → 进入对话流程（等同说了一句话）
+    onNativeTranscript: function(text){ if(text && text.trim()) onSpeechFinal(text.trim()); },
+    // 原生离线识别中间结果 → 实时"正在听"反馈
+    onNativeInterim: function(text){
+      if(!text) return;
+      if(wakeActive){ wakeStatus.textContent = '听到：「'+text+'」'; }
+      else { mainCaption.classList.add('show'); mcStatus.textContent='我在听…「'+text+'」'; }
+    }
   };
   // 状态切换统一回传原生（联动浮窗/前台保活）。轻量、异常安全。
   var _ciraOrigSetState = setState;
