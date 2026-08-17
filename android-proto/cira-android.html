@@ -36,9 +36,6 @@
   #talkBtn.listening{animation:pulse 1.1s ease-in-out infinite;}
   @keyframes pulse{0%,100%{box-shadow:0 0 0 2px rgba(255,170,100,.4),0 0 26px rgba(255,170,100,.3);}
     50%{box-shadow:0 0 0 8px rgba(255,170,100,.55),0 0 48px rgba(255,170,100,.6);}}
-  /* 提示语移到按钮旁：用 talkRow 横向排列按钮+提示 */
-  #talkRow{display:flex;align-items:center;justify-content:center;gap:12px;}
-  #talkHint{font-size:11px;opacity:.4;letter-spacing:1px;max-width:140px;text-align:left;line-height:1.4;}
 
   /* 主屏状态指示器（紧凑，仅短提示；长回复已移至 #responseBubble） */
   #mainCaption{max-width:min(80vw,360px);text-align:center;
@@ -161,14 +158,11 @@
 
   <div id="talkWrap">
     <div id="mainCaption"><div class="mc-status"></div><div class="mc-reply"></div></div>
-    <div id="talkRow">
-      <button id="talkBtn">按住<br>说话</button>
-      <div id="talkHint">点屏幕任意处<br>可“戳”一下</div>
-    </div>
+    <button id="talkBtn">按住<br>说话</button>
   </div>
 
   <!-- 首次打开引导：脉冲提示，首次交互后自动隐藏（不再出现会记到 localStorage） -->
-  <div id="welcomeHint">👋 嗨！按住下面按钮，或戳戳屏幕，跟我说话吧～</div>
+  <div id="welcomeHint">👋 嗨！按住下面按钮，跟我说话吧～</div>
 
   <!-- push 模式专用回复气泡（与输入控件分离，避免重叠） -->
   <div id="responseArea"><div id="responseBubble"></div></div>
