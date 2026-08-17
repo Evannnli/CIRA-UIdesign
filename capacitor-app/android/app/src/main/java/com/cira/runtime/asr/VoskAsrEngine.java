@@ -1,6 +1,7 @@
 package com.cira.runtime.asr;
 
 import android.content.Context;
+import android.content.res.AssetFileDescriptor;
 import android.content.res.AssetManager;
 
 import org.json.JSONObject;
@@ -12,6 +13,7 @@ import org.vosk.android.RecognitionListener;
 import org.vosk.android.SpeechService;
 
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -98,26 +100,31 @@ public class VoskAsrEngine {
     }
 
     private void copyAssetFolder(AssetManager am, String src, File dst) throws IOException {
-        String[] files = am.list(src);
-        if (files == null) {            // src 是一个文件，不是目录
-            copyAssetFile(am, src, dst);
+        // 先用 openFd 试探：能打开=文件；抛 FileNotFoundException=目录。
+        // 这是判别"文件路径 vs 目录"的最可靠方式——AssetManager.list() 在文件路径上
+        // 某些 Android 版本返回空数组 [] 而非 null，会把文件误当目录从而拷出空目录（
+        // 空目录 .length()<1MB → 上层抛"模型拷贝不完整"）。
+        try {
+            AssetFileDescriptor probe = am.openFd(src);
+            probe.close();   // 能打开，说明是文件 → 走拷贝
+            InputStream in = am.open(src);   // 本工程模型已 noCompress(Stored)，open 读大文件无截断风险
+            dst.getParentFile().mkdirs();
+            OutputStream out = new FileOutputStream(dst);
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            in.close();
+            out.close();
             return;
+        } catch (FileNotFoundException e) {
+            // src 是目录，继续 list
         }
+        String[] files = am.list(src);
+        if (files == null) return;
         dst.mkdirs();
         for (String f : files) {
             copyAssetFolder(am, src + "/" + f, new File(dst, f));
         }
-    }
-
-    private void copyAssetFile(AssetManager am, String src, File dst) throws IOException {
-        InputStream in = am.open(src);
-        dst.getParentFile().mkdirs();
-        OutputStream out = new FileOutputStream(dst);
-        byte[] buf = new byte[8192];
-        int n;
-        while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
-        in.close();
-        out.close();
     }
 
     private void deleteRecursively(File f) {
