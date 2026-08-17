@@ -4,6 +4,11 @@ import android.content.Context;
 
 import com.cira.runtime.BuildConfig;
 
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
+
 import ai.picovoice.porcupine.Porcupine;
 import ai.picovoice.porcupine.PorcupineManager;
 import ai.picovoice.porcupine.PorcupineManagerCallback;
@@ -38,7 +43,15 @@ public class PorcupineWakewordEngine {
             PorcupineManager.Builder b = new PorcupineManager.Builder().setAccessKey(key);
             int kwRes = ctx.getResources().getIdentifier("cira_wake", "raw", ctx.getPackageName());
             if (kwRes != 0) {
-                b.setKeywordPath(ctx, kwRes);
+                // Porcupine 3.x 的 setKeywordPath 只接受文件路径，需先把 raw 资源拷到缓存目录
+                File f = new File(ctx.getCacheDir(), "cira_wake.ppn");
+                try (InputStream in = ctx.getResources().openRawResource(kwRes);
+                     OutputStream out = new FileOutputStream(f)) {
+                    byte[] buf = new byte[8192];
+                    int n;
+                    while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                }
+                b.setKeywordPath(f.getAbsolutePath());
             } else {
                 b.setKeyword(Porcupine.BuiltInKeyword.COMPUTER);
             }

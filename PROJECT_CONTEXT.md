@@ -1,6 +1,6 @@
 # CIRA 项目传承文档（PROJECT_CONTEXT）
 
-> **最后更新**：2026-08-17（真 App 路线启动：Capacitor 安卓壳工程脚手架 v0.1 源码） · 星云交互定版 `git tag nebula-1.0`
+> **最后更新**：2026-08-17（真 App 安卓壳 `app-debug.apk` 已在本机 macOS arm64 成功编译出包） · 星云交互定版 `git tag nebula-1.0`
 > 本文件随代码走，换电脑/换模型/换协作者都能满血接手。改动重大里程碑后必须更新此处并 commit。
 
 ---
@@ -49,8 +49,10 @@
   - **真语音测试通道（https 代理）**：纯 http 下手机浏览器禁 `getUserMedia`（需安全上下文），故小米上只能打字、验不到真 ASR。已加 `android-proto/bridge_proxy.js`——本机 https(:8443) 提供页面 + 把 `/api/*`（及兼容 `/v1/*`）在 Mac 内部转发到 `127.0.0.1:8787`（同源、避开混内容拦截）。手机打开 `https://<本机LAN IP>:8443/cira-android.html?bridge=/`（启动日志自动打印该地址），接受自签证书后即解锁麦克风，可验 **说话(Web Speech ASR)→/api/chat→星云变色(emotion)→/api/tts 语音回应** 全链路。ASR 在浏览器端做（Web Speech API zh-CN），后端只收文字。自签证书在 `.tls/`（已 gitignore，需用时本地 openssl 重生成）。
 - 🟡 **联调可移植性 / 桥地址解析（2026-08-14）**：`bridge_proxy.js` 桥地址解析优先级 = 环境变量 `CIRA_BRIDGE` > 同目录 `bridge_target.txt`（一行 URL）> 默认 `http://127.0.0.1:8787`（本机真模型）。启动日志用 `lanIP()` 动态打印本机新 LAN IP，换网络不用手改。**2026-08-14 实测跑通**：真模型就在本机 8787，无需内网穿透/远程桥，默认真桥即可。先前规划的"家里桥机 Cloudflare Tunnel"方案已不再需要（模型与本机同源）。`mock_bridge.js`(:8000/现 8123) 仅作离线演示保留，勿与真模型混淆。
 - 🟢 **UX 升级 v0.1（2026-08-14 晚）**：纯前端、手机硬刷新即生效。① 首屏 onboarding 脉冲提示（#welcomeHint，首次交互后自动隐藏+记 localStorage）；② 开场星云问候脉冲；③ 模型思考 ~15–23s 等待期状态栏持续显示「我听到：「…」思考…」动画点，避免像卡死。后续 UX 方向待定（情绪↔星云映射审计 / 唤醒悬浮面板打磨 / 危机呈现 / 延迟体感）。
-- 🟡 **真 App 路线启动（2026-08-17）**：新建 `capacitor-app/`（Capacitor 8 安卓壳工程），把 v1.0 Web 星云封装为原生 App，
-  含前台保活服务 / Porcupine 离线唤醒词 / SYSTEM_ALERT_WINDOW 顶层浮窗 / JS↔原生桥。源码已就绪，**待在带 Android SDK 的机器上编译出 APK**（生成机无 SDK）。构建与小米15/HyperOS 授权清单见 `capacitor-app/README_BUILD.md`。
+- 🟢 **真 App 安卓壳已在本机出包（2026-08-17）**：`capacitor-app/`（Capacitor 8 安卓壳）把 v1.0 Web 星云封装为原生 App，
+  含前台保活服务 / Porcupine 离线唤醒词 / SYSTEM_ALERT_WINDOW 顶层浮窗 / JS↔原生桥。**本机（macOS arm64）已成功编译 `app-debug.apk`（6.1MB，compileSdk 36）**。
+  ⚠️ 关键环境坑已写入 `capacitor-app/README_BUILD.md` §3.5：**必须 JDK 21**（非17）+ **Gradle 必须显式走代理**（Gradle 不读 `HTTPS_PROXY` 环境变量，否则 `dl.google.com` 握手被掐）。工具链装在 `/Users/evanli/cira-sdk/`。
+  构建与小米15/HyperOS 授权清单见 `capacitor-app/README_BUILD.md`。
 - ⏸️ **硬件**：ST77916 黑屏根因已定位（QPI→标准 SPI 8-bit），修复已 commit 未 push；Mac 崩溃阻断验证。
 
 ---
@@ -74,7 +76,7 @@
    - `PorcupineWakewordEngine`（离线唤醒词，-v 3.0.1）解决**熄屏语音唤醒**；
    - `CiraOverlayService`（`SYSTEM_ALERT_WINDOW` 顶层浮窗，复用 `?overlay=1` 小星云）解决**顶层悬浮**；
    - `CiraRuntimePlugin` 暴露 JS↔原生桥（`window.CiraNative`/`window.CIRA`），唤醒命中经 `wakeword` 事件转 Web 的 `triggerWake()`。
-   - ⚠️ 当前为**源码 + Gradle 配置**，尚未在真实 Android SDK 上编译（生成机无 SDK）。见 `capacitor-app/README_BUILD.md`。
+   - ✅ **已在本机（macOS arm64）成功编译出 `app-debug.apk`（6.1MB）**：需 JDK 21 + Gradle 显式走代理（见 `capacitor-app/README_BUILD.md` §3.5）。工具链 `/Users/evanli/cira-sdk/`。
    - 路线对照：浏览器 Web 原型 = `android-proto/cira-android.html`（v1.0 冻结）；原生封装版 = `capacitor-app/`（Web 层是同一套星云 UI 的副本，改 `www/` 后 `npx cap sync android`）。
 4. **硬件恢复**（可选）：Windows 笔记本或 USB-TTL 适配器到位后，续烧录验证。
 

@@ -40,14 +40,15 @@ capacitor-app/
 ## 1. 前置条件
 
 - **Node ≥ 18** + 已装依赖（本工程已 `npm i` 过 `@capacitor/core` `@capacitor/cli` `@capacitor/android`）。
-- **JDK 17+**（AGP 8 / Capacitor 8 / compileSdk 36 需要）。
+- **JDK 21**（⚠️ 非 17）。Capacitor 8.13 的 `:capacitor-android` 库以**源码级 Java 21** 编译，用 JDK 17 会直接报 `无效的源发行版：21`。本机实测 Amazon Corretto 21 通过。
 - **Android SDK**：`platform-tools`、`build-tools`（最新）、`platforms;android-36`。
   - 最简：装 **Android Studio**，打开 `capacitor-app/android` 让它自动拉 SDK。
   - 或仅命令行：`sdkmanager "platform-tools" "build-tools;36.0.0" "platforms;android-36"`，并设 `ANDROID_HOME`。
 - **小米15 一台**（HyperOS），USB 调试或无线调试已开。
 
-> 本工程在 2026-08-17 于 Mac 上**仅生成了源码与 Gradle 配置，未做实际 APK 编译**（该机无 Android SDK）。
-> 首次在带 SDK 的机器上编译，可能需按报错微调（见 §6）。
+> ✅ **本工程已于 2026-08-17 在本机（macOS arm64）成功编译出 `app-debug.apk`（6.1 MB）**。
+> 工具链装在 `/Users/evanli/cira-sdk/`：`amazon-corretto-21.jdk`（JDK21）、`android-sdk`（cmdline-tools + platform-36 + build-tools;36.0.0 + platform-tools）。
+> 本机出包命令见 §3.5。换机器只需重装同版本 JDK21 + SDK 并设好代理即可。
 
 ---
 
@@ -78,6 +79,31 @@ cd android
 ```
 
 或用 Android Studio 图形界面：`npx cap open android` → 点 ▶ Run（连上小米15 直接装）。
+
+### 3.5 ⚠️ 本机（含公司/校园网）出包必读：Gradle 必须显式走代理
+
+**最坑的一点**：Gradle **不读** `HTTPS_PROXY` 这类环境变量。本机上网实际走 `http://127.0.0.1:52190`（WorkBuddy 会话代理，来自系统设置）。
+若直接 `./gradlew assembleDebug`，JVM 会直连 `dl.google.com` 被代理端掐断，报
+`Remote host terminated the handshake` / `server may not support TLSv1.2/TLSv1.3`。
+（curl、sdkmanager 能下是因为它们认系统代理；Gradle 不认。）
+
+**修法**：把代理以 JVM 参数传给 Gradle（不要写进仓库 `gradle.properties`，它是会话/机器相关的）：
+
+```bash
+export JAVA_HOME=/Users/evanli/cira-sdk/amazon-corretto-21.jdk/Contents/Home
+export ANDROID_SDK_ROOT=/Users/evanli/cira-sdk/android-sdk
+export ANDROID_HOME=$ANDROID_SDK_ROOT
+export GRADLE_OPTS="-Xmx2048m \
+  -Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=52190 \
+  -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=52190 \
+  -Dhttp.nonProxyHosts=localhost|127.0.0.1"
+cd capacitor-app/android
+./gradlew clean assembleDebug --no-daemon
+# 产物：app/build/outputs/apk/debug/app-debug.apk
+```
+
+> 代理端口会变（会话级），以 `echo $HTTPS_PROXY` 当前值替换 `52190` 即可。
+> 若换到无代理的纯净网络，删掉 `GRADLE_OPTS` 里的 `-D*proxy*` 段即可直连。
 
 ---
 
@@ -122,9 +148,9 @@ HyperOS 对后台/浮窗限制极严，**光在 App 里点"允许"不够**，必
 
 ## 7. 已知限制 / 待验证
 
-- [ ] 本工程**尚未在真实 Android SDK 上编译过**（生成机无 SDK）。首次编译可能需微调：
-  - Porcupine 版本 `3.0.1`（已确认 Maven Central 存在）；若解析失败可改 `2.2.2`。
-  - AGP/Gradle 由 Capacitor 8 生成的 wrapper（Gradle 8.14.3）决定，通常自洽。
+- [x] 本工程**已于 2026-08-17 在本机（macOS arm64）成功编译出 `app-debug.apk`**（6.1 MB，compileSdk 36）。
+  - Porcupine `3.0.1` 解析正常；其 `setKeywordPath` 仅接受 `String` 文件路径（已用"拷贝 raw→文件"实现，见 `wake/PorcupineWakewordEngine.java`）。
+  - AGP 8.13 + Gradle 8.14.3 自洽；**需 JDK 21**、且 **Gradle 必须显式走代理**（见 §3.5）。
 - [ ] 浮窗 WebView 加载的是 `file:///android_asset/public/index.html`（`?overlay=1`），与 Capacitor 主 WebView 是两套实例，状态不共享（符合设计：浮窗只显示小星云 + 点击回主界面）。
 - [ ] `?overlay=1` 模式下目前只显示星云 + 点击回主界面；如需在浮窗里直接对话，需在 `index.html` 的 overlay 分支补迷你对话 UI。
 - [ ] 熄屏唤醒的"真·always-on"依赖厂商不杀后台 + 自启动授权，HyperOS 上需用户手动开（见 §5）。
