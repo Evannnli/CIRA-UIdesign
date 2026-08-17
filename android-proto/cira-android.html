@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<title>CIRA · 安卓原型</title>
+<title>CIRA · 安卓原型 v0.9</title>
 <style>
   :root{
     --ink:#f6e9dc;
@@ -21,13 +21,13 @@
     text-shadow:0 0 14px rgba(255,160,90,.5);}
 
   /* 底部按住说话 */
-  #talkWrap{position:fixed;left:0;right:0;bottom:calc(env(safe-area-inset-bottom,0) + 26px);
-    display:flex;flex-direction:column;align-items:center;gap:10px;z-index:6;}
-  #talkBtn{width:96px;height:96px;border-radius:50%;border:none;
+  #talkWrap{position:fixed;left:0;right:0;bottom:calc(env(safe-area-inset-bottom,0) + 10px);
+    display:flex;flex-direction:column;align-items:center;gap:8px;z-index:6;}
+  #talkBtn{width:84px;height:84px;border-radius:50%;border:none;
     background:radial-gradient(circle at 35% 30%,#4a2a18,#1a0e08);
     box-shadow:0 0 0 2px rgba(255,170,100,.35),0 8px 30px rgba(0,0,0,.55),
       inset 0 0 24px rgba(255,160,90,.25);
-    color:var(--ink);font-size:14px;letter-spacing:2px;
+    color:var(--ink);font-size:13px;letter-spacing:2px;
     display:flex;align-items:center;justify-content:center;
     transition:transform .12s ease, box-shadow .2s ease;will-change:transform;}
   #talkBtn:active{transform:scale(.9);
@@ -36,11 +36,32 @@
   #talkBtn.listening{animation:pulse 1.1s ease-in-out infinite;}
   @keyframes pulse{0%,100%{box-shadow:0 0 0 2px rgba(255,170,100,.4),0 0 26px rgba(255,170,100,.3);}
     50%{box-shadow:0 0 0 8px rgba(255,170,100,.55),0 0 48px rgba(255,170,100,.6);}}
-  #talkHint{font-size:12px;opacity:.45;letter-spacing:1px;}
+  #talkHint{font-size:11px;opacity:.4;letter-spacing:1px;}
+
+  /* 主屏状态指示器（紧凑，仅短提示；长回复已移至 #responseBubble） */
+  #mainCaption{max-width:min(80vw,360px);text-align:center;
+    padding:6px 12px;border-radius:14px;
+    background:rgba(28,16,9,.5);border:1px solid rgba(255,185,130,.18);
+    font-size:12px;line-height:1.4;opacity:0;transition:opacity .3s ease;
+    pointer-events:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  #mainCaption.show{opacity:.9;}
+  #mainCaption .mc-reply{display:none;}  /* push 模式不再使用 */
+
+  /* ===== push 模式专用回复气泡（与输入控件分离，不再重叠）===== */
+  #responseArea{position:fixed;left:0;right:0;
+    bottom:calc(env(safe-area-inset-bottom,0) + 230px);
+    display:flex;justify-content:center;padding:0 20px;z-index:6;pointer-events:none;}
+  #responseBubble{max-width:min(84vw,400px);min-height:36px;
+    background:rgba(22,13,8,.78);border:1px solid rgba(255,180,120,.25);
+    border-radius:18px;padding:12px 16px;
+    font-size:15px;line-height:1.65;color:var(--ink);
+    -webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);
+    opacity:0;transition:opacity .35s ease;pointer-events:auto;}
+  #responseBubble.show{opacity:1;}
 
   /* 首次打开引导（onboarding）：脉冲提示，首次交互后自动隐藏 */
   #welcomeHint{position:fixed;left:50%;transform:translateX(-50%) translateY(10px);
-    bottom:calc(env(safe-area-inset-bottom,0) + 132px);z-index:7;
+    bottom:calc(env(safe-area-inset-bottom,0) + 150px);z-index:7;
     max-width:min(82vw,380px);text-align:center;padding:11px 18px;border-radius:22px;
     background:rgba(28,16,9,.6);border:1px solid rgba(255,185,130,.32);
     color:var(--ink);font-size:14px;letter-spacing:1px;line-height:1.5;
@@ -101,7 +122,7 @@
 
   /* 常驻文字输入坞：主屏/唤醒共用入口，浮于唤醒面板之上(z-index 高于面板) */
   #textDock{position:fixed;left:0;right:0;
-    bottom:calc(env(safe-area-inset-bottom,0) + 158px);
+    bottom:calc(env(safe-area-inset-bottom,0) + 175px);
     display:flex;justify-content:center;padding:0 16px;z-index:9;pointer-events:none;}
   #textDock > *{pointer-events:auto;}
   #mainText{flex:1;max-width:min(86vw,420px);min-width:0;height:44px;border-radius:22px;
@@ -114,7 +135,8 @@
     font-size:15px;font-weight:600;letter-spacing:1px;}
   #sendBtn:active{transform:scale(.95);}
   /* 唤醒态：文字框上移到悬浮面板之上，且不被面板盖住 */
-  body.wake-on #textDock{bottom:calc(env(safe-area-inset-bottom,0) + 178px);}
+  body.wake-on #textDock{bottom:calc(env(safe-area-inset-bottom,0) + 200px);}
+  body.wake-on #responseArea{bottom:calc(env(safe-area-inset-bottom,0) + 265px);}
 </style>
 </head>
 <body>
@@ -141,6 +163,9 @@
 
   <!-- 首次打开引导：脉冲提示，首次交互后自动隐藏（不再出现会记到 localStorage） -->
   <div id="welcomeHint">👋 嗨！按住下面按钮，或戳戳屏幕，跟我说话吧～</div>
+
+  <!-- push 模式专用回复气泡（与输入控件分离，避免重叠） -->
+  <div id="responseArea"><div id="responseBubble"></div></div>
 
   <!-- 常驻文字输入入口：位于按住说话上方；语音唤醒时浮于悬浮面板之上 -->
   <div id="textDock">
@@ -347,6 +372,8 @@
   const mcReply=mainCaption.querySelector('.mc-reply');
   const mainText=document.getElementById('mainText');
   const sendBtn=document.getElementById('sendBtn');
+  const responseArea=document.getElementById('responseArea');
+  const responseBubble=document.getElementById('responseBubble');
   if(!SR){                                            // 浏览器不支持语音输入（如 iPhone Safari）
     talkBtn.style.display='none';
     mainCaption.classList.add('show');
@@ -451,9 +478,9 @@
     opts = opts || {};
     currentChannel = opts.voice ? 'voice' : 'text';
     const ui = (mode==='push')
-      ? { status:mcStatus, reply:mcReply }
+      ? { status:mcStatus, reply:responseBubble }
       : { status:wakeStatus, reply:wakeReply };
-    if(mode==='push') mainCaption.classList.add('show');
+    if(mode==='push'){ mainCaption.classList.add('show'); responseBubble.classList.remove('show'); }
     if(mode==='wake') wakeMic.textContent='我在听…';
     setState(STATE.THINK);
     let dotN = 0;
@@ -483,6 +510,7 @@
     if(crisis) showCrisis();
     wakePhase='speak'; setState(STATE.SPEAK);
     ui.reply.textContent = replyText || text;
+    if(mode==='push') ui.reply.classList.add('show');  // 气泡淡入
     ui.status.textContent = '回应中…';
     let ok=false;
     if(TTS_NEURAL && replyText){
@@ -508,7 +536,7 @@
     wakePhase='idle';
     setState(STATE.IDLE);
     mcStatus.textContent='按「按住说话」再聊一句';
-    mcReply.textContent='';
+    // mcReply 不再使用（push 回复已走 responseBubble）；mainCaption 仅保留紧凑状态提示
     mainCaption.classList.remove('show');
     // 由用户再次按住才触发下一轮；convMode 仍为 'push'
   }
