@@ -35,7 +35,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * CIRA 离线语音识别引擎（Sherpa-ONNX）。
  * 替代 Vosk，使用 sherpa-onnx streaming zipformer 模型，识别准确率显著更高。
- * 模型首次启动时自动从 GitHub 下载到内部存储。
+ * 模型首次启动时自动从 GitHub 下载到内部存储（含重试 + 超时 + 重定向处理）。
  *
  * 接口与 VoskAsrEngine 完全一致：AsrListener(onPartial / onFinal / onError)。
  */
@@ -54,6 +54,11 @@ public class SherpaAsrEngine {
     private static final String DECODER_FILE = "decoder.onnx";
     private static final String JOINER_FILE = "joiner.int8.onnx";
     private static final String TOKENS_FILE = "tokens.txt";
+
+    // --- 网络参数 ---
+    private static final int CONNECT_TIMEOUT = 30000;   // 30s 连接超时
+    private static final int READ_TIMEOUT = 120000;     // 120s 读取超时（模型文件较大）
+    private static final int MAX_RETRIES = 3;           // 下载失败最多重试 3 次
 
     // --- 音频参数 ---
     private static final int SAMPLE_RATE = 16000;
@@ -80,6 +85,7 @@ public class SherpaAsrEngine {
     private Thread audioThread;
     private final AtomicBoolean listening = new AtomicBoolean(false);
     private boolean modelReady = false;
+    private volatile boolean modelPreparing = false;
 
     // 兜底机制：stop() 时如果 onFinal 没触发过，用最后一次中间结果兜底
     private volatile boolean finalEmitted = false;
@@ -94,10 +100,24 @@ public class SherpaAsrEngine {
         this.listener = l;
     }
 
+    public boolean isModelReady() {
+        return modelReady;
+    }
+
     /**
      * 异步准备模型（下载 + 解压）。完成后回调 onReady()。
+     * 如果模型已在下载中，不会重复触发。
      */
     public void prepareModel(ModelReadyCallback cb) {
+        if (modelReady) {
+            if (cb != null) cb.onReady();
+            return;
+        }
+        if (modelPreparing) {
+            Log.i(TAG, "模型正在下载/初始化中，跳过重复调用");
+            return;
+        }
+        modelPreparing = true;
         new Thread(() -> {
             try {
                 File modelDir = new File(ctx.getFilesDir(), MODEL_DIR_NAME);
@@ -117,6 +137,8 @@ public class SherpaAsrEngine {
             } catch (Exception e) {
                 Log.e(TAG, "Model init failed: " + e.getMessage(), e);
                 if (cb != null) cb.onError("ASR 模型初始化失败: " + e.getMessage());
+            } finally {
+                modelPreparing = false;
             }
         }).start();
     }
@@ -125,13 +147,81 @@ public class SherpaAsrEngine {
         modelDir.mkdirs();
         File tarFile = new File(modelDir, "model.tar.bz2");
 
-        // 下载
-        URL url = new URL(MODEL_URL);
+        // 带重试的下载（GitHub 从中国访问可能不稳定）
+        IOException lastException = null;
+        for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+            try {
+                Log.i(TAG, "ASR 模型下载尝试 " + attempt + "/" + MAX_RETRIES);
+                if (cb != null) {
+                    final int a = attempt;
+                    new Thread(() -> cb.onProgress(-(a))).start(); // 负数=尝试次数
+                }
+                downloadFileWithRedirect(MODEL_URL, tarFile, cb);
+                lastException = null;
+                break; // 下载成功
+            } catch (IOException e) {
+                lastException = e;
+                Log.w(TAG, "ASR 模型下载失败 (尝试 " + attempt + "/" + MAX_RETRIES + "): " + e.getMessage());
+                // 清理不完整的下载文件
+                if (tarFile.exists()) tarFile.delete();
+                if (attempt < MAX_RETRIES) {
+                    try { Thread.sleep(2000 * attempt); } catch (InterruptedException ignored) {}
+                }
+            }
+        }
+        if (lastException != null) {
+            throw new IOException("ASR 模型下载失败（已重试" + MAX_RETRIES + "次）: " + lastException.getMessage(), lastException);
+        }
+
+        // 解压 tar.bz2
+        Log.i(TAG, "Extracting ASR model...");
+        extractTarBz2(tarFile, modelDir);
+        tarFile.delete();
+        new File(modelDir, ".downloaded").createNewFile();
+    }
+
+    /**
+     * 下载文件，手动处理 GitHub 301/302 重定向（setInstanceFollowRedirects 跨协议时不可靠）。
+     */
+    private void downloadFileWithRedirect(String urlStr, File output, ModelReadyCallback cb) throws IOException {
+        URL url = new URL(urlStr);
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-        conn.setInstanceFollowRedirects(true);
+        conn.setConnectTimeout(CONNECT_TIMEOUT);
+        conn.setReadTimeout(READ_TIMEOUT);
+        conn.setInstanceFollowRedirects(false); // 手动处理重定向
+
+        // 跟随重定向链（最多 10 次）
+        int redirects = 0;
+        int status;
+        while (true) {
+            status = conn.getResponseCode();
+            if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
+                String location = conn.getHeaderField("Location");
+                conn.disconnect();
+                if (location == null || redirects++ > 10) {
+                    throw new IOException("重定向次数过多或 Location 为空");
+                }
+                Log.i(TAG, "HTTP " + status + " -> " + location);
+                url = new URL(location);
+                conn = (HttpURLConnection) url.openConnection();
+                conn.setConnectTimeout(CONNECT_TIMEOUT);
+                conn.setReadTimeout(READ_TIMEOUT);
+                conn.setInstanceFollowRedirects(false);
+                continue;
+            }
+            break;
+        }
+
+        if (status < 200 || status >= 300) {
+            conn.disconnect();
+            throw new IOException("HTTP " + status + ": " + conn.getResponseMessage());
+        }
+
         int totalSize = conn.getContentLength();
+        Log.i(TAG, "ASR 模型文件大小: " + (totalSize > 0 ? (totalSize / 1024 / 1024) + " MB" : "未知"));
+
         try (InputStream in = new BufferedInputStream(conn.getInputStream());
-             FileOutputStream out = new FileOutputStream(tarFile)) {
+             FileOutputStream out = new FileOutputStream(output)) {
             byte[] buf = new byte[8192];
             int n, downloaded = 0;
             int lastPercent = -1;
@@ -143,7 +233,6 @@ public class SherpaAsrEngine {
                     if (percent != lastPercent && cb != null) {
                         lastPercent = percent;
                         final int p = percent;
-                        // 回调进度
                         new Thread(() -> cb.onProgress(p)).start();
                     }
                 }
@@ -151,12 +240,7 @@ public class SherpaAsrEngine {
         } finally {
             conn.disconnect();
         }
-
-        // 解压 tar.bz2
-        Log.i(TAG, "Extracting ASR model...");
-        extractTarBz2(tarFile, modelDir);
-        tarFile.delete();
-        new File(modelDir, ".downloaded").createNewFile();
+        Log.i(TAG, "ASR 模型下载完成: " + output.getAbsolutePath());
     }
 
     private void extractTarBz2(File tarBz2File, File destDir) throws IOException {
@@ -215,11 +299,15 @@ public class SherpaAsrEngine {
 
     /**
      * 开始识别。在后台线程采集麦克风音频并实时送入 sherpa-onnx 流式解码。
+     * 如果模型尚未就绪，静默返回（不抛异常）。
      */
     public void start() throws Exception {
         synchronized (lock) {
             if (listening.get()) return;
-            if (!modelReady) throw new IllegalStateException("Model not ready. Call prepareModel() first.");
+            if (!modelReady) {
+                Log.w(TAG, "模型未就绪，start() 被跳过");
+                return;
+            }
 
             finalEmitted = false;
             lastPartial = "";

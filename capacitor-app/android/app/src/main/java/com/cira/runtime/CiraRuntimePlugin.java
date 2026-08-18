@@ -234,14 +234,27 @@ public class CiraRuntimePlugin extends Plugin {
                         try { asr.start(); } catch (Exception e) { emitAsr("asrError", e.getMessage()); }
                     }
                     @Override public void onError(String msg) { emitAsr("asrError", msg); }
-                    @Override public void onProgress(int percent) { Log.d("SherpaAsr", "模型下载: " + percent + "%"); }
+                    @Override public void onProgress(int percent) {
+                        Log.d("SherpaAsr", "模型下载: " + Math.abs(percent) + "%"
+                            + (percent < 0 ? " (第" + (-percent) + "次尝试)" : ""));
+                        // 负数=重试次数提示，通过诊断条反馈给用户
+                        if (percent < 0) {
+                            emitAsr("asrError", "正在下载语音模型（第" + (-percent) + "次尝试）…");
+                        }
+                    }
                 });
-            } else {
+                // call.resolve() 在这里——即使模型还在下载，也先 resolve 让 Web 层继续
+                // ASR 引擎会在模型就绪后自动开始识别
+            } else if (asr.isModelReady()) {
                 // 模型已就绪，直接开始
                 new Thread(() -> {
                     try { asr.start(); }
                     catch (Exception e) { emitAsr("asrError", e.getMessage()); }
                 }).start();
+            } else {
+                // 模型正在下载中，不重复启动，给用户反馈
+                Log.d("SherpaAsr", "模型正在下载中，请稍候…");
+                emitAsr("asrError", "语音模型正在下载中，请稍候再试");
             }
             call.resolve();
         } catch (Exception e) {
@@ -330,7 +343,21 @@ public class CiraRuntimePlugin extends Plugin {
     }
 
     private void deliverApiResult(PluginCall call, int status, String bodyText, String errMsg) {
-        if (errMsg != null) { call.reject("api_fetch_failed", errMsg); return; }
+        if (errMsg != null) {
+            // 让错误信息对用户友好：检测常见网络错误模式
+            String lower = errMsg.toLowerCase();
+            String hint;
+            if (lower.contains("timeout") || lower.contains("abort") || lower.contains("connect timed out")) {
+                hint = "网络超时，请检查连接";
+            } else if (lower.contains("refused") || lower.contains("unreachable")) {
+                hint = "无法连接到服务器，请检查网络";
+            } else {
+                hint = "请求失败，请重试";
+            }
+            Log.e("CiraRuntime", "apiFetch error: " + errMsg + " -> user hint: " + hint);
+            call.reject(hint, errMsg);
+            return;
+        }
         JSObject ret = new JSObject();
         ret.put("status", status);
         ret.put("body", bodyText == null ? "" : bodyText);

@@ -223,7 +223,7 @@
   // 调试模式：URL 加 ?debug=1 才显示开发工具栏（5 个状态按钮）与模拟入口；面向用户默认隐藏
   if(new URLSearchParams(location.search).get('debug')) document.body.classList.add('debug');
   // 构建版本（每次出包改这里，便于真机确认装的是哪一版）
-  const APP_BUILD = 'v1.0.3';
+  const APP_BUILD = 'v1.0.4';
   // 轻量诊断条：把原生/网络的关键事件显示在屏幕底部，便于真机排障（双击可清空）。
   // 不依赖控制台，用户直接看黑条即可告诉我们"它到底收到了什么/没收到什么"。
   // 关键：启动即显示，且右上角常驻版本号——用于一眼确认装的是不是最新包。

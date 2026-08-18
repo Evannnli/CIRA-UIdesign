@@ -290,18 +290,37 @@ public class SherpaKwsEngine {
         File kwsDir = new File(ctx.getFilesDir(), "sherpa-kws");
         kwsDir.mkdirs();
 
-        // 下载
+        // 下载（带重试，且检查完整性：如果 tar 文件存在但模型关键文件不全，重新下载）
         File tarFile = new File(kwsDir, "model.tar.bz2");
-        if (!tarFile.exists()) {
-            downloadFile(modelUrl, tarFile, callback);
+        File marker = new File(kwsDir, ".downloaded");
+        if (!marker.exists() || !isModelDownloaded(new File(kwsDir, MODEL_DIR_NAME))) {
+            // 清理旧的不完整下载
+            if (tarFile.exists()) tarFile.delete();
+
+            IOException lastEx = null;
+            for (int attempt = 1; attempt <= 3; attempt++) {
+                try {
+                    Log.i(TAG, "KWS 模型下载尝试 " + attempt + "/3");
+                    downloadFile(modelUrl, tarFile, callback);
+                    lastEx = null;
+                    break;
+                } catch (IOException e) {
+                    lastEx = e;
+                    Log.w(TAG, "KWS 模型下载失败 (尝试 " + attempt + "/3): " + e.getMessage());
+                    if (tarFile.exists()) tarFile.delete();
+                    if (attempt < 3) Thread.sleep(2000 * attempt);
+                }
+            }
+            if (lastEx != null) throw new IOException("KWS 模型下载失败（已重试3次）: " + lastEx.getMessage(), lastEx);
         }
 
         // 解压
         extractTarBz2(tarFile, kwsDir);
         Log.i(TAG, "模型解压完成: " + kwsDir.getAbsolutePath());
 
-        // 清理压缩包
+        // 清理压缩包 + 写标记
         tarFile.delete();
+        new File(kwsDir, ".downloaded").createNewFile();
     }
 
     private void downloadFile(String urlStr, File output, ModelReadyCallback callback) throws IOException {
