@@ -68,11 +68,12 @@ dependencies {
 }
 
 // 构建前自动合并 ASR 模型（part1 + part2 → sherpa-asr.tar.bz2）
-// GitHub 单文件 100MB 限制，git 保留拆分文件；APK assets 用合并后单文件
+// GitHub 单文件 100MB 限制，git 保留拆分文件（models-source/）；APK assets 用合并后单文件
 task mergeAsrModel {
+    def srcDir = file('../models-source')  // part 文件在 assets 之外
     def assetsDir = file('src/main/assets/models')
-    def part1 = new File(assetsDir, 'sherpa-asr-part1.tar.bz2')
-    def part2 = new File(assetsDir, 'sherpa-asr-part2.tar.bz2')
+    def part1 = new File(srcDir, 'sherpa-asr-part1.tar.bz2')
+    def part2 = new File(srcDir, 'sherpa-asr-part2.tar.bz2')
     def merged = new File(assetsDir, 'sherpa-asr.tar.bz2')
 
     inputs.files(part1, part2)
@@ -80,10 +81,22 @@ task mergeAsrModel {
 
     doLast {
         if (!part1.exists() || !part2.exists()) {
-            throw new GradleException("ASR model parts not found: part1=${part1.exists()}, part2=${part2.exists()}")
+            throw new GradleException("ASR model parts not found in ${srcDir}: part1=${part1.exists()}, part2=${part2.exists()}")
         }
+        assetsDir.mkdirs()
         logger.lifecycle("Merging ASR model: part1 + part2 → sherpa-asr.tar.bz2")
-        merged.bytes = part1.bytes + part2.bytes
+        // 流式合并，避免把 126MB 全部读入 JVM 堆导致 OOM
+        new FileOutputStream(merged).withStream { out ->
+            [part1, part2].each { part ->
+                new FileInputStream(part).withStream { in_ ->
+                    def buf = new byte[8192]
+                    int n
+                    while ((n = in_.read(buf)) != -1) {
+                        out.write(buf, 0, n)
+                    }
+                }
+            }
+        }
         logger.lifecycle("Merged ASR model: ${merged.length()} bytes")
     }
 }
