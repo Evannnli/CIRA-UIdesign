@@ -34,6 +34,12 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
     }
+    // APK 输出命名：cira-v{versionName}-{buildType}.apk
+    applicationVariants.configureEach { variant ->
+        variant.outputs.all { output ->
+            outputFileName = "cira-v${variant.versionName}-${variant.buildType.name}.apk"
+        }
+    }
 }
 
 repositories {

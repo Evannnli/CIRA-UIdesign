@@ -180,19 +180,20 @@ public class SherpaKwsEngine {
 
     /** 创建默认关键词文件（ppinyin 格式） */
     private void createDefaultKeywords(String path) throws IOException {
-        // ppinyin 格式：@分隔音节，每个音节=声母+韵母+声调数字
-        // 常见中文唤醒词的 ppinyin 表示
-        // 注意：具体格式需与模型的 tokens.txt 对齐
-        // 这里提供几个常见唤醒词，实际使用时可根据需要修改
+        // ppinyin 格式：tokens 空格分隔，@后为显示名称
+        // tokens 来自模型的 tokens.txt（声母/韵母+声调）
+        // CIRA 唤醒词："你好西拉" / "你好cira"
         String defaultKeywords =
-            // "你好" - ni3 hao3
-            "@n i3 h ao3\n" +
-            // "你好小星" - ni3 hao3 xiao3 xing1
-            "@n i3 h ao3 x iao3 x ing1\n" +
-            // "小星你好" - xiao3 xing1 ni3 hao3
-            "@x iao3 x ing1 n i3 h ao3\n" +
-            // "嘿小星" - hei1 xiao3 xing1
-            "@h ei1 x iao3 x ing1\n";
+            // "你好西拉" (ni3 hao3 xi1 la1) — 主唤醒词
+            "n ǐ h ǎo x ī l ā @你好西拉\n" +
+            // "你好cira" — 英文名，语音上等同于"你好西拉"
+            "n ǐ h ǎo x ī l ā @你好cira\n" +
+            // "西拉" (xi1 la1) — 简短唤醒
+            "x ī l ā @西拉\n" +
+            // "cira" — 简短英文唤醒
+            "x ī l ā @cira\n" +
+            // "你好" (ni3 hao3) — 通用唤醒
+            "n ǐ h ǎo @你好\n";
 
         File kwFile = new File(path);
         kwFile.getParentFile().mkdirs();

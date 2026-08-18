@@ -42,9 +42,8 @@ public class SherpaAsrEngine {
     private static final String TAG = "SherpaAsr";
 
     // --- 模型配置（int8 量化中文模型，体积小、精度高） ---
-    // 模型拆分为两个 asset 文件（各 <100MB，符合 GitHub 文件大小限制），运行时拼接后解压
-    private static final String ASSET_PART1 = "models/sherpa-asr-part1.tar.bz2";
-    private static final String ASSET_PART2 = "models/sherpa-asr-part2.tar.bz2";
+    // 模型已预打包到 APK assets（单文件，无需拼接）
+    private static final String ASSET_MODEL = "models/sherpa-asr.tar.bz2";
     private static final String MODEL_SUBDIR = "sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30";
     private static final String MODEL_DIR_NAME = "sherpa-asr";
     // 模型文件名（int8 量化版）
@@ -140,14 +139,10 @@ public class SherpaAsrEngine {
         modelDir.mkdirs();
         File tarFile = new File(modelDir, "model.tar.bz2");
 
-        // 从 assets 拼接模型文件（part1 + part2 → 完整 tar.bz2）
-        Log.i(TAG, "从 assets 拼接 ASR 模型...");
-        if (cb != null) cb.onProgress(0);
-        try (FileOutputStream out = new FileOutputStream(tarFile)) {
-            copyAssetToStream(ASSET_PART1, out, cb, 0, 50);    // part1 占 0-50%
-            copyAssetToStream(ASSET_PART2, out, cb, 50, 100);   // part2 占 50-100%
-        }
-        Log.i(TAG, "模型拼接完成: " + tarFile.length() + " bytes");
+        // 从 assets 直接复制完整模型文件（单文件，无需拼接）
+        Log.i(TAG, "从 assets 复制 ASR 模型...");
+        copyAssetFile(ASSET_MODEL, tarFile, cb);
+        Log.i(TAG, "模型复制完成: " + tarFile.length() + " bytes");
 
         // 解压 tar.bz2
         Log.i(TAG, "解压 ASR 模型...");
@@ -155,21 +150,6 @@ public class SherpaAsrEngine {
         tarFile.delete();
         new File(modelDir, ".downloaded").createNewFile();
         Log.i(TAG, "ASR 模型准备完成");
-    }
-
-    /**
-     * 从 assets 读取数据并写入 OutputStream（流式，不占额外内存）
-     */
-    private void copyAssetToStream(String assetPath, OutputStream out, ModelReadyCallback cb,
-                                    int progressMin, int progressMax) throws IOException {
-        try (InputStream in = ctx.getAssets().open(assetPath)) {
-            byte[] buf = new byte[8192];
-            int n;
-            while ((n = in.read(buf)) > 0) {
-                out.write(buf, 0, n);
-            }
-        }
-        if (cb != null) cb.onProgress(progressMax);
     }
 
     /**
