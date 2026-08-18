@@ -1,6 +1,6 @@
 # CIRA 项目传承文档（PROJECT_CONTEXT）
 
-> **最后更新**：2026-08-18（v1.0.5 模型预打包 `commit 0be725b`，APK 221MB，Sherpa KWS+ASR 预装 assets） · 星云交互定版 `git tag nebula-1.0`
+> **最后更新**：2026-08-18（v1.0.6 模型合并+唤醒词修改 `commit 5bf7364`，APK 221MB，Sherpa KWS+ASR 预装 assets） · 星云交互定版 `git tag nebula-1.0`
 > 本文件随代码走，换电脑/换模型/换协作者都能满血接手。改动重大里程碑后必须更新此处并 commit。
 
 ---
@@ -49,10 +49,11 @@
   - **真语音测试通道（https 代理）**：纯 http 下手机浏览器禁 `getUserMedia`（需安全上下文），故小米上只能打字、验不到真 ASR。已加 `android-proto/bridge_proxy.js`——本机 https(:8443) 提供页面 + 把 `/api/*`（及兼容 `/v1/*`）在 Mac 内部转发到 `127.0.0.1:8787`（同源、避开混内容拦截）。手机打开 `https://<本机LAN IP>:8443/cira-android.html?bridge=/`（启动日志自动打印该地址），接受自签证书后即解锁麦克风，可验 **说话(Web Speech ASR)→/api/chat→星云变色(emotion)→/api/tts 语音回应** 全链路。ASR 在浏览器端做（Web Speech API zh-CN），后端只收文字。自签证书在 `.tls/`（已 gitignore，需用时本地 openssl 重生成）。
 - 🟡 **联调可移植性 / 桥地址解析（2026-08-14）**：`bridge_proxy.js` 桥地址解析优先级 = 环境变量 `CIRA_BRIDGE` > 同目录 `bridge_target.txt`（一行 URL）> 默认 `http://127.0.0.1:8787`（本机真模型）。启动日志用 `lanIP()` 动态打印本机新 LAN IP，换网络不用手改。**2026-08-14 实测跑通**：真模型就在本机 8787，无需内网穿透/远程桥，默认真桥即可。先前规划的"家里桥机 Cloudflare Tunnel"方案已不再需要（模型与本机同源）。`mock_bridge.js`(:8000/现 8123) 仅作离线演示保留，勿与真模型混淆。
 - 🟢 **UX 升级 v0.1（2026-08-14 晚）**：纯前端、手机硬刷新即生效。① 首屏 onboarding 脉冲提示（#welcomeHint，首次交互后自动隐藏+记 localStorage）；② 开场星云问候脉冲；③ 模型思考 ~15–23s 等待期状态栏持续显示「我听到：「…」思考…」动画点，避免像卡死。后续 UX 方向待定（情绪↔星云映射审计 / 唤醒悬浮面板打磨 / 危机呈现 / 延迟体感）。
-- 🟢 **真 App 安卓壳 v1.0.5（2026-08-18）**：`capacitor-app/`（Capacitor 8 安卓壳）把 v1.0 Web 星云封装为原生 App，
-  含前台保活服务 / Sherpa-ONNX 离线唤醒词+语音识别 / SYSTEM_ALERT_WINDOW 顶层浮窗 / JS↔原生桥。**模型预打包到 APK assets**（KWS 31MB + ASR 70MB+56MB），首次启动复制到内部存储，之后完全离线。APK 221MB（commit `0be725b`）。
+- 🟢 **真 App 安卓壳 v1.0.6（2026-08-18）**：`capacitor-app/`（Capacitor 8 安卓壳）把 v1.0 Web 星云封装为原生 App，
+  含前台保活服务 / Sherpa-ONNX 离线唤醒词+语音识别 / SYSTEM_ALERT_WINDOW 顶层浮窗 / JS↔原生桥。**模型预打包到 APK assets**（KWS 31MB + ASR 126MB 构建时自动合并），首次启动复制到内部存储，之后完全离线。APK 221MB（commit `5bf7364`）。
   - 核心架构演进：Porcupine(需注册) → Sherpa-ONNX(开源)；Vosk(准确率差) → Sherpa zipformer-zh-int8(流式高准确率)。
-  - Git 历史清理：`git filter-branch` 删除超限 126MB 文件 + `git gc --prune=now --aggressive` + force push。
+  - Git 历史清理：`git filter-repo` 删除超限 126MB 文件 + force push。
+  - v1.0.6 新增：Gradle `mergeAsrModel` 任务构建时自动合并 ASR 模型（part1+part2→单文件）、唤醒词改为你好西拉/你好cira、APK 输出命名带版本号。
   ⚠️ 关键环境坑已写入 `capacitor-app/README_BUILD.md` §3.5：**必须 JDK 21**（非17）+ **Gradle 必须显式走代理**（Gradle 不读 `HTTPS_PROXY` 环境变量，否则 `dl.google.com` 握手被掐；多代理端口时挑快的 7897）。工具链装在 `/Users/evanli/cira-sdk/`。
   构建与小米15/HyperOS 授权清单见 `capacitor-app/README_BUILD.md`。
 - ⏸️ **硬件**：ST77916 黑屏根因已定位（QPI→标准 SPI 8-bit），修复已 commit 未 push；Mac 崩溃阻断验证。
@@ -72,13 +73,13 @@
 
 1. ✅ **真模型联调实测跑通（2026-08-14）**：本机 `8787` 冻结 Core 已由 `.start.sh` 拉起，`android-proto/cira-android.html` 经 `bridge_proxy.js`(:8443) 直接调 `/api/chat`+`/api/tts` 真链路。手机实测地址 `https://<本机LAN IP>:8443/cira-android.html?bridge=/`（麦克风/语音需 https，iPhone Safari 仅支持朗读不支持语音输入）。本机 playground 直开 `http://localhost:8787`。
 2. **（进行中）交互/UX 升级**：模型联调已通，焦点回到用户真实诉求——升级交互与用户体验。待 Evan 指定优先打磨的 UX 方向（如：唤醒/聆听/回应动效手感、儿童话术与情绪映射、危机与安全协议呈现、首屏引导、延迟体感优化等）。
-3. **封 Capacitor（真 App · v1.0.5 已出包）**：`capacitor-app/`（Capacitor 8 + 自带安卓模板），
+3. **封 Capacitor（真 App · v1.0.6 已出包）**：`capacitor-app/`（Capacitor 8 + 自带安卓模板），
    把冻结版 Web 星云（v1.0）封装为原生安卓 App，补浏览器三短板：
    - 前台 `CiraForegroundService`（PARTIAL_WAKE_LOCK + 常驻通知）解决**后台保活/熄屏常驻**；
    - `SherpaKwsEngine`（开源离线唤醒词，Sherpa-ONNX zipformer）解决**熄屏语音唤醒**；
    - `CiraOverlayService`（`SYSTEM_ALERT_WINDOW` 顶层浮窗，复用 `?overlay=1` 小星云）解决**顶层悬浮**；
    - `CiraRuntimePlugin` 暴露 JS↔原生桥（`window.CiraNative`/`window.CIRA`），唤醒命中经 `wakeword` 事件转 Web 的 `triggerWake()`。
-   - ✅ **v1.0.5（commit `0be725b`）已出包**：APK 221MB，含 Sherpa KWS 31MB + Sherpa ASR 126MB（拆分两个 part）。模型预打包到 assets，首次启动复制到内部存储，之后完全离线。
+   - ✅ **v1.0.6（commit `5bf7364`）已出包**：APK 221MB，含 Sherpa KWS 31MB + Sherpa ASR 126MB（构建时自动合并）。模型预打包到 assets，首次启动复制到内部存储，之后完全离线。唤醒词：你好西拉/你好cira。
    - 路线对照：浏览器 Web 原型 = `android-proto/cira-android.html`（v1.0 冻结）；原生封装版 = `capacitor-app/`（Web 层是同一套星云 UI 的副本，改 `www/` 后 `npx cap sync android`）。
    - ⚠️ 本机已装齐 Android 工具链（`/Users/evanli/cira-sdk/`，JDK 21 + Android SDK），可直接编译出包。
 4. **硬件恢复**（可选）：Windows 笔记本或 USB-TTL 适配器到位后，续烧录验证。
@@ -109,4 +110,13 @@
 3. **Git 历史清理**：`git filter-branch` 从所有历史提交中删除 126MB 超限文件 + `git gc --prune=now --aggressive` + `git push origin main --force`。
 4. **清理**：删除 `build.gradle` 未使用的 `KWS_MODEL_URL` 常量。
 5. **版本号**：`1.0.4 → 1.0.5`，`versionCode 1 → 2`。
+
+🔧 **2026-08-18 v1.0.6（模型合并+唤醒词·commit `5bf7364`）**：用户要求三项改进：1) 模型合并（构建时自动合并而非运行时拼接）；2) 唤醒词改为"你好西拉"/"你好cira"；3) APK 命名带版本号。核心变更：
+1. **Gradle 合并任务**：`mergeAsrModel` task 在构建前自动合并 part1 + part2 为单文件 `sherpa-asr.tar.bz2`（126MB），所有 `merge*Assets` 任务依赖此任务。
+2. **.gitignore**：排除合并后的 sherpa-asr.tar.bz2（126MB，GitHub 100MB 限制），git 仅保留拆分文件。
+3. **唤醒词**：SherpaKwsEngine `createDefaultKeywords()` 使用 ppinyin 格式的"你好西拉"/"你好cira"/"西拉"/"cira"/"你好"。
+4. **APK 命名**：`applicationVariants.configureEach` 配置输出文件名 `cira-v{versionName}-{buildType}.apk`。
+5. **SherpaAsrEngine**：使用单文件 `ASSET_MODEL` 而非拼接两个 part。
+6. **Git 历史清理**：`git filter-repo` 从历史中彻底删除 126MB 的 sherpa-asr.tar.bz2。
+7. **版本号**：`1.0.5 → 1.0.6`，`versionCode 2 → 3`。
 6. **APK 体积**：221MB（含 31MB KWS + 70MB ASR part1 + 56MB ASR part2 + 其他）。
