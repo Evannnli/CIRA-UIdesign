@@ -28,14 +28,12 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * CIRA 离线语音识别引擎（Sherpa-ONNX）。
  * 替代 Vosk，使用 sherpa-onnx streaming zipformer 模型，识别准确率显著更高。
- * 模型首次启动时自动从 GitHub 下载到内部存储（含重试 + 超时 + 重定向处理）。
+ * 模型打包在 APK assets 中，首次启动时从 assets 复制到内部存储。
  *
  * 接口与 VoskAsrEngine 完全一致：AsrListener(onPartial / onFinal / onError)。
  */
@@ -44,9 +42,7 @@ public class SherpaAsrEngine {
     private static final String TAG = "SherpaAsr";
 
     // --- 模型配置（int8 量化中文模型，体积小、精度高） ---
-    private static final String MODEL_URL =
-        "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/"
-        + "sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30.tar.bz2";
+    private static final String ASSET_MODEL_FILE = "models/sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30.tar.bz2";
     private static final String MODEL_SUBDIR = "sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30";
     private static final String MODEL_DIR_NAME = "sherpa-asr";
     // 模型文件名（int8 量化版）
@@ -54,11 +50,6 @@ public class SherpaAsrEngine {
     private static final String DECODER_FILE = "decoder.onnx";
     private static final String JOINER_FILE = "joiner.int8.onnx";
     private static final String TOKENS_FILE = "tokens.txt";
-
-    // --- 网络参数 ---
-    private static final int CONNECT_TIMEOUT = 30000;   // 30s 连接超时
-    private static final int READ_TIMEOUT = 120000;     // 120s 读取超时（模型文件较大）
-    private static final int MAX_RETRIES = 3;           // 下载失败最多重试 3 次
 
     // --- 音频参数 ---
     private static final int SAMPLE_RATE = 16000;
@@ -147,89 +138,37 @@ public class SherpaAsrEngine {
         modelDir.mkdirs();
         File tarFile = new File(modelDir, "model.tar.bz2");
 
-        // 带重试的下载（GitHub 从中国访问可能不稳定）
-        IOException lastException = null;
-        for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-            try {
-                Log.i(TAG, "ASR 模型下载尝试 " + attempt + "/" + MAX_RETRIES);
-                if (cb != null) {
-                    final int a = attempt;
-                    new Thread(() -> cb.onProgress(-(a))).start(); // 负数=尝试次数
-                }
-                downloadFileWithRedirect(MODEL_URL, tarFile, cb);
-                lastException = null;
-                break; // 下载成功
-            } catch (IOException e) {
-                lastException = e;
-                Log.w(TAG, "ASR 模型下载失败 (尝试 " + attempt + "/" + MAX_RETRIES + "): " + e.getMessage());
-                // 清理不完整的下载文件
-                if (tarFile.exists()) tarFile.delete();
-                if (attempt < MAX_RETRIES) {
-                    try { Thread.sleep(2000 * attempt); } catch (InterruptedException ignored) {}
-                }
-            }
-        }
-        if (lastException != null) {
-            throw new IOException("ASR 模型下载失败（已重试" + MAX_RETRIES + "次）: " + lastException.getMessage(), lastException);
-        }
+        // 从 assets 复制模型文件
+        Log.i(TAG, "从 assets 复制 ASR 模型...");
+        copyAssetFile(ASSET_MODEL_FILE, tarFile, cb);
 
         // 解压 tar.bz2
-        Log.i(TAG, "Extracting ASR model...");
+        Log.i(TAG, "解压 ASR 模型...");
         extractTarBz2(tarFile, modelDir);
         tarFile.delete();
         new File(modelDir, ".downloaded").createNewFile();
+        Log.i(TAG, "ASR 模型准备完成");
     }
 
     /**
-     * 下载文件，手动处理 GitHub 301/302 重定向（setInstanceFollowRedirects 跨协议时不可靠）。
+     * 从 assets 复制文件到内部存储
      */
-    private void downloadFileWithRedirect(String urlStr, File output, ModelReadyCallback cb) throws IOException {
-        URL url = new URL(urlStr);
-        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-        conn.setConnectTimeout(CONNECT_TIMEOUT);
-        conn.setReadTimeout(READ_TIMEOUT);
-        conn.setInstanceFollowRedirects(false); // 手动处理重定向
+    private void copyAssetFile(String assetPath, File outputFile, ModelReadyCallback cb) throws IOException {
+        Log.i(TAG, "从 assets 复制模型: " + assetPath);
+        if (cb != null) cb.onProgress(0);
 
-        // 跟随重定向链（最多 10 次）
-        int redirects = 0;
-        int status;
-        while (true) {
-            status = conn.getResponseCode();
-            if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
-                String location = conn.getHeaderField("Location");
-                conn.disconnect();
-                if (location == null || redirects++ > 10) {
-                    throw new IOException("重定向次数过多或 Location 为空");
-                }
-                Log.i(TAG, "HTTP " + status + " -> " + location);
-                url = new URL(location);
-                conn = (HttpURLConnection) url.openConnection();
-                conn.setConnectTimeout(CONNECT_TIMEOUT);
-                conn.setReadTimeout(READ_TIMEOUT);
-                conn.setInstanceFollowRedirects(false);
-                continue;
-            }
-            break;
-        }
-
-        if (status < 200 || status >= 300) {
-            conn.disconnect();
-            throw new IOException("HTTP " + status + ": " + conn.getResponseMessage());
-        }
-
-        int totalSize = conn.getContentLength();
-        Log.i(TAG, "ASR 模型文件大小: " + (totalSize > 0 ? (totalSize / 1024 / 1024) + " MB" : "未知"));
-
-        try (InputStream in = new BufferedInputStream(conn.getInputStream());
-             FileOutputStream out = new FileOutputStream(output)) {
+        try (InputStream in = ctx.getAssets().open(assetPath);
+             FileOutputStream out = new FileOutputStream(outputFile)) {
             byte[] buf = new byte[8192];
-            int n, downloaded = 0;
+            int n, total = 0;
+            int fileSize = ctx.getAssets().open(assetPath).available();
             int lastPercent = -1;
+
             while ((n = in.read(buf)) > 0) {
                 out.write(buf, 0, n);
-                downloaded += n;
-                if (totalSize > 0) {
-                    int percent = (int) (downloaded * 100L / totalSize);
+                total += n;
+                if (fileSize > 0) {
+                    int percent = (int) (total * 100L / fileSize);
                     if (percent != lastPercent && cb != null) {
                         lastPercent = percent;
                         final int p = percent;
@@ -237,10 +176,8 @@ public class SherpaAsrEngine {
                     }
                 }
             }
-        } finally {
-            conn.disconnect();
         }
-        Log.i(TAG, "ASR 模型下载完成: " + output.getAbsolutePath());
+        Log.i(TAG, "复制完成: " + outputFile.getAbsolutePath());
     }
 
     private void extractTarBz2(File tarBz2File, File destDir) throws IOException {

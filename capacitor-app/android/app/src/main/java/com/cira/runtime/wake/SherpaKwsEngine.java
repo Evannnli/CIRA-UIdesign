@@ -25,8 +25,6 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -34,7 +32,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * 完全开源（Apache 2.0），无需注册任何账号。
  *
  * 工作流程：
- *  1. 首次启动时从 GitHub 下载 KWS 模型（~31MB tar.bz2）到内部存储
+ *  1. 首次启动时从 assets 复制 KWS 模型（~31MB tar.bz2）到内部存储
  *  2. 解压模型文件（encoder/decoder/joiner/tokens/keywords）
  *  3. 初始化 KeywordSpotter，开始麦克风采集 + 关键词检测
  *  4. 检测到唤醒词时回调 listener.onWake()
@@ -286,88 +284,55 @@ public class SherpaKwsEngine {
     }
 
     private void downloadAndExtractModel(ModelReadyCallback callback) throws Exception {
-        String modelUrl = com.cira.runtime.BuildConfig.KWS_MODEL_URL;
         File kwsDir = new File(ctx.getFilesDir(), "sherpa-kws");
         kwsDir.mkdirs();
 
-        // 下载（带重试，且检查完整性：如果 tar 文件存在但模型关键文件不全，重新下载）
-        File tarFile = new File(kwsDir, "model.tar.bz2");
+        // 检查模型是否已解压
         File marker = new File(kwsDir, ".downloaded");
         if (!marker.exists() || !isModelDownloaded(new File(kwsDir, MODEL_DIR_NAME))) {
-            // 清理旧的不完整下载
-            if (tarFile.exists()) tarFile.delete();
+            // 从 assets 复制 tar.bz2 文件
+            File tarFile = new File(kwsDir, "model.tar.bz2");
+            copyAssetFile("models/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01.tar.bz2", tarFile, callback);
 
-            IOException lastEx = null;
-            for (int attempt = 1; attempt <= 3; attempt++) {
-                try {
-                    Log.i(TAG, "KWS 模型下载尝试 " + attempt + "/3");
-                    downloadFile(modelUrl, tarFile, callback);
-                    lastEx = null;
-                    break;
-                } catch (IOException e) {
-                    lastEx = e;
-                    Log.w(TAG, "KWS 模型下载失败 (尝试 " + attempt + "/3): " + e.getMessage());
-                    if (tarFile.exists()) tarFile.delete();
-                    if (attempt < 3) Thread.sleep(2000 * attempt);
-                }
-            }
-            if (lastEx != null) throw new IOException("KWS 模型下载失败（已重试3次）: " + lastEx.getMessage(), lastEx);
+            // 解压
+            Log.i(TAG, "解压 KWS 模型...");
+            extractTarBz2(tarFile, kwsDir);
+            tarFile.delete(); // 删除压缩包
+
+            // 写标记
+            marker.createNewFile();
+            Log.i(TAG, "KWS 模型准备完成");
         }
-
-        // 解压
-        extractTarBz2(tarFile, kwsDir);
-        Log.i(TAG, "模型解压完成: " + kwsDir.getAbsolutePath());
-
-        // 清理压缩包 + 写标记
-        tarFile.delete();
-        new File(kwsDir, ".downloaded").createNewFile();
     }
 
-    private void downloadFile(String urlStr, File output, ModelReadyCallback callback) throws IOException {
-        Log.i(TAG, "开始下载模型: " + urlStr);
-        URL url = new URL(urlStr);
-        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-        conn.setConnectTimeout(30000);
-        conn.setReadTimeout(60000);
-        conn.setInstanceFollowRedirects(true);
+    /**
+     * 从 assets 复制文件到内部存储
+     */
+    private void copyAssetFile(String assetPath, File outputFile, ModelReadyCallback callback) throws IOException {
+        Log.i(TAG, "从 assets 复制模型: " + assetPath);
+        if (callback != null) callback.onProgress(0);
 
-        // 处理 GitHub 重定向
-        int status = conn.getResponseCode();
-        if (status == 302 || status == 301) {
-            String newUrl = conn.getHeaderField("Location");
-            conn.disconnect();
-            conn = (HttpURLConnection) new URL(newUrl).openConnection();
-            conn.setConnectTimeout(30000);
-            conn.setReadTimeout(60000);
-        }
-
-        int totalBytes = conn.getContentLength();
-        Log.i(TAG, "文件大小: " + (totalBytes / 1024 / 1024) + " MB");
-
-        try (InputStream in = new BufferedInputStream(conn.getInputStream());
-             OutputStream out = new FileOutputStream(output)) {
+        try (InputStream in = ctx.getAssets().open(assetPath);
+             FileOutputStream out = new FileOutputStream(outputFile)) {
             byte[] buf = new byte[8192];
-            int bytesRead;
-            long totalRead = 0;
-            int lastPercent = 0;
+            int n, total = 0;
+            // 获取文件大小
+            int fileSize = ctx.getAssets().open(assetPath).available();
+            int lastPercent = -1;
 
-            while ((bytesRead = in.read(buf)) != -1) {
-                out.write(buf, 0, bytesRead);
-                totalRead += bytesRead;
-
-                if (totalBytes > 0) {
-                    int percent = (int) (totalRead * 100 / totalBytes);
-                    if (percent != lastPercent && percent % 10 == 0) {
+            while ((n = in.read(buf)) > 0) {
+                out.write(buf, 0, n);
+                total += n;
+                if (fileSize > 0) {
+                    int percent = (int) (total * 100L / fileSize);
+                    if (percent != lastPercent && callback != null) {
                         lastPercent = percent;
-                        Log.i(TAG, "下载进度: " + percent + "%");
-                        if (callback != null) callback.onProgress(percent);
+                        callback.onProgress(percent);
                     }
                 }
             }
-        } finally {
-            conn.disconnect();
         }
-        Log.i(TAG, "模型下载完成: " + output.getAbsolutePath());
+        Log.i(TAG, "复制完成: " + outputFile.getAbsolutePath());
     }
 
     private void extractTarBz2(File tarBz2File, File destDir) throws IOException {

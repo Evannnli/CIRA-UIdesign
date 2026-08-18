@@ -227,7 +227,7 @@ public class CiraRuntimePlugin extends Plugin {
                     @Override public void onFinal(String text) { emitAsr("asrFinal", text); }
                     @Override public void onError(String msg) { emitAsr("asrError", msg); }
                 });
-                // 首次使用：异步下载+初始化模型（后续复用）
+                // 模型已预装在 assets 中，从 assets 复制到内部存储（很快）
                 asr.prepareModel(new SherpaAsrEngine.ModelReadyCallback() {
                     @Override public void onReady() {
                         // 模型就绪后自动开始识别
@@ -235,15 +235,10 @@ public class CiraRuntimePlugin extends Plugin {
                     }
                     @Override public void onError(String msg) { emitAsr("asrError", msg); }
                     @Override public void onProgress(int percent) {
-                        Log.d("SherpaAsr", "模型下载: " + Math.abs(percent) + "%"
-                            + (percent < 0 ? " (第" + (-percent) + "次尝试)" : ""));
-                        // 负数=重试次数提示，通过诊断条反馈给用户
-                        if (percent < 0) {
-                            emitAsr("asrError", "正在下载语音模型（第" + (-percent) + "次尝试）…");
-                        }
+                        Log.d("SherpaAsr", "模型准备: " + percent + "%");
                     }
                 });
-                // call.resolve() 在这里——即使模型还在下载，也先 resolve 让 Web 层继续
+                // call.resolve() 在这里——模型从 assets 复制很快，先 resolve 让 Web 层继续
                 // ASR 引擎会在模型就绪后自动开始识别
             } else if (asr.isModelReady()) {
                 // 模型已就绪，直接开始
@@ -252,9 +247,8 @@ public class CiraRuntimePlugin extends Plugin {
                     catch (Exception e) { emitAsr("asrError", e.getMessage()); }
                 }).start();
             } else {
-                // 模型正在下载中，不重复启动，给用户反馈
-                Log.d("SherpaAsr", "模型正在下载中，请稍候…");
-                emitAsr("asrError", "语音模型正在下载中，请稍候再试");
+                // 模型正在准备中，不重复启动
+                Log.d("SherpaAsr", "模型正在准备中…");
             }
             call.resolve();
         } catch (Exception e) {

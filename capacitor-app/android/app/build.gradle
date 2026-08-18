@@ -10,8 +10,8 @@ android {
         applicationId "com.cira.runtime"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode 2
+        versionName "1.0.5"
         // —— 编译期配置（请填入你的真实值，或运行时用 setConfig 设置 Core 地址）——
         // CIRA Core 地址（本机 8787 / 局域网 / 云端）。例："http://192.168.31.235:8787"
         buildConfigField "String", "CIRA_CORE_URL", "\"https://evanmacbook-pro.taild2d78c.ts.net\""
