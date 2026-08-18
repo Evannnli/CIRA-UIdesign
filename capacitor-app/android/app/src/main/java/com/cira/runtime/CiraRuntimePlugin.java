@@ -7,10 +7,11 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.JSObject;
 
 import com.cira.runtime.BuildConfig;
-import com.cira.runtime.asr.VoskAsrEngine;
+import com.cira.runtime.asr.SherpaAsrEngine;
 
 import android.Manifest;
 import android.content.Context;
+import android.util.Log;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
@@ -45,7 +46,7 @@ public class CiraRuntimePlugin extends Plugin {
     private PermissionCallback pendingCallback;
     private PluginCall pendingAsrCall;    // startAsr 因缺权限挂起，待授权后继续
     private PluginCall pendingMicCall;     // requestMicPermission 挂起
-    private VoskAsrEngine asr;            // 离线语音识别引擎（原生替代 Web Speech）
+    private SherpaAsrEngine asr;          // 离线语音识别引擎（Sherpa-ONNX streaming ASR）
 
     private interface PermissionCallback {
         void onResult(Map<String, Boolean> result);
@@ -95,7 +96,8 @@ public class CiraRuntimePlugin extends Plugin {
     public void getConfig(PluginCall call) {
         JSObject ret = new JSObject();
         ret.put("coreUrl", BuildConfig.CIRA_CORE_URL);
-        ret.put("wakewordEnabled", !BuildConfig.PORCUPINE_ACCESS_KEY.isEmpty());
+        // Sherpa-ONNX KWS 始终可用（无需 API key），模型首次启动时自动下载
+        ret.put("wakewordEnabled", true);
         call.resolve(ret);
     }
 
@@ -200,7 +202,7 @@ public class CiraRuntimePlugin extends Plugin {
         call.resolve();
     }
 
-    // ---------- 离线语音识别（Vosk，替代 Web Speech API） ----------
+    // ---------- 离线语音识别（Sherpa-ONNX streaming ASR，替代 Web Speech API） ----------
     @PluginMethod
     public void startAsr(PluginCall call) {
         // 缺麦克风权限时自动申请，避免 Web 层忘记调 requestPermissions 导致识别永不启动
@@ -219,18 +221,28 @@ public class CiraRuntimePlugin extends Plugin {
     private void doStartAsr(PluginCall call) {
         try {
             if (asr == null) {
-                asr = new VoskAsrEngine(getContext());
-                asr.setListener(new VoskAsrEngine.AsrListener() {
+                asr = new SherpaAsrEngine(getContext());
+                asr.setListener(new SherpaAsrEngine.AsrListener() {
                     @Override public void onPartial(String text) { emitAsr("asrPartial", text); }
                     @Override public void onFinal(String text) { emitAsr("asrFinal", text); }
                     @Override public void onError(String msg) { emitAsr("asrError", msg); }
                 });
+                // 首次使用：异步下载+初始化模型（后续复用）
+                asr.prepareModel(new SherpaAsrEngine.ModelReadyCallback() {
+                    @Override public void onReady() {
+                        // 模型就绪后自动开始识别
+                        try { asr.start(); } catch (Exception e) { emitAsr("asrError", e.getMessage()); }
+                    }
+                    @Override public void onError(String msg) { emitAsr("asrError", msg); }
+                    @Override public void onProgress(int percent) { Log.d("SherpaAsr", "模型下载: " + percent + "%"); }
+                });
+            } else {
+                // 模型已就绪，直接开始
+                new Thread(() -> {
+                    try { asr.start(); }
+                    catch (Exception e) { emitAsr("asrError", e.getMessage()); }
+                }).start();
             }
-            // 模型拷贝+加载较重，放后台线程，避免阻塞主线程/ANR
-            new Thread(() -> {
-                try { asr.start(); }
-                catch (Exception e) { emitAsr("asrError", e.getMessage()); }
-            }).start();
             call.resolve();
         } catch (Exception e) {
             call.reject("asr_start_failed", e.getMessage());

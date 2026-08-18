@@ -18,7 +18,8 @@ import androidx.core.app.NotificationCompat;
  * 后台唤醒词前台服务：
  *  - 常驻通知（Android 8+ 必需），保证进程不被回收；
  *  - 持有 PARTIAL_WAKE_LOCK，熄屏/后台时仍能采集麦克风；
- *  - 运行 Porcupine 唤醒词引擎，命中后回调 Web（triggerWake）+ 拉起主界面/浮窗。
+ *  - 运行 Sherpa-ONNX 唤醒词引擎（替代 Porcupine），命中后回调 Web（triggerWake）+ 拉起主界面/浮窗。
+ *  - 首次启动时自动下载 KWS 模型（~31MB）。
  */
 public class CiraForegroundService extends Service {
 
@@ -27,7 +28,7 @@ public class CiraForegroundService extends Service {
     private static final String CHANNEL_ID = "cira_wakeword";
     private static final int NOTIFY_ID = 1;
 
-    private com.cira.runtime.wake.PorcupineWakewordEngine engine;
+    private com.cira.runtime.wake.SherpaKwsEngine engine;
     private PowerManager.WakeLock wakeLock;
 
     @Override
@@ -50,9 +51,20 @@ public class CiraForegroundService extends Service {
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CIRA::WakeLock");
         wakeLock.acquire();
 
-        // 启动唤醒词引擎（无 key 时仅保活不检测）
-        engine = new com.cira.runtime.wake.PorcupineWakewordEngine(this, this::onWake);
-        engine.start();
+        // 启动 Sherpa-ONNX 唤醒词引擎（首次启动需下载模型）
+        engine = new com.cira.runtime.wake.SherpaKwsEngine(this, this::onWake);
+        engine.prepareModel(new com.cira.runtime.wake.SherpaKwsEngine.ModelReadyCallback() {
+            @Override public void onReady() {
+                android.util.Log.i("CiraFgSvc", "KWS 模型就绪，开始检测");
+                engine.start();
+            }
+            @Override public void onError(String msg) {
+                android.util.Log.e("CiraFgSvc", "KWS 模型加载失败: " + msg);
+            }
+            @Override public void onProgress(int percent) {
+                android.util.Log.i("CiraFgSvc", "KWS 模型下载: " + percent + "%");
+            }
+        });
 
         // 被杀后系统重启（需用户授权自启动）
         return START_STICKY;
