@@ -145,11 +145,9 @@ public class SherpaKwsEngine {
         String dir = modelDir.getAbsolutePath();
         String keywordsPath = dir + "/keywords.txt";
 
-        // 如果 keywords.txt 不存在，创建默认的
-        File kwFile = new File(keywordsPath);
-        if (!kwFile.exists() || kwFile.length() == 0) {
-            createDefaultKeywords(keywordsPath);
-        }
+        // ⚠️ 始终覆盖 keywords.txt：模型自带的示例唤醒词（你好军哥、小爱同学等）不适用于 CIRA，
+        // 必须替换为我们的唤醒词。之前因为"if (!exists)"条件导致此方法从未被调用。
+        createDefaultKeywords(keywordsPath);
 
         OnlineModelConfig modelConfig = new OnlineModelConfig();
         OnlineTransducerModelConfig transducer = new OnlineTransducerModelConfig();
@@ -181,18 +179,14 @@ public class SherpaKwsEngine {
     /** 创建默认关键词文件（ppinyin 格式） */
     private void createDefaultKeywords(String path) throws IOException {
         // ppinyin 格式：tokens 空格分隔，@后为显示名称
-        // tokens 来自模型的 tokens.txt（声母/韵母+声调）
-        // CIRA 唤醒词："你好西拉" / "你好cira"
+        // tokens 来自模型的 tokens.txt（声母/韵母+声调），由 sherpa-onnx-cli text2token 验证
+        // ⚠️ 英文词（如 "cira"）无法转为 ppinyin token，模型只支持中文拼音
         String defaultKeywords =
-            // "你好西拉" (ni3 hao3 xi1 la1) — 主唤醒词
+            // "你好西拉" (nǐ hǎo xī lā) — 主唤醒词
             "n ǐ h ǎo x ī l ā @你好西拉\n" +
-            // "你好cira" — 英文名，语音上等同于"你好西拉"
-            "n ǐ h ǎo x ī l ā @你好cira\n" +
-            // "西拉" (xi1 la1) — 简短唤醒
+            // "西拉" (xī lā) — 简短唤醒
             "x ī l ā @西拉\n" +
-            // "cira" — 简短英文唤醒
-            "x ī l ā @cira\n" +
-            // "你好" (ni3 hao3) — 通用唤醒
+            // "你好" (nǐ hǎo) — 通用唤醒
             "n ǐ h ǎo @你好\n";
 
         File kwFile = new File(path);
