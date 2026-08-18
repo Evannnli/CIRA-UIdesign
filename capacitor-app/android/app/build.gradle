@@ -67,6 +67,31 @@ dependencies {
     implementation project(':capacitor-cordova-android-plugins')
 }
 
+// 构建前自动合并 ASR 模型（part1 + part2 → sherpa-asr.tar.bz2）
+// GitHub 单文件 100MB 限制，git 保留拆分文件；APK assets 用合并后单文件
+task mergeAsrModel {
+    def assetsDir = file('src/main/assets/models')
+    def part1 = new File(assetsDir, 'sherpa-asr-part1.tar.bz2')
+    def part2 = new File(assetsDir, 'sherpa-asr-part2.tar.bz2')
+    def merged = new File(assetsDir, 'sherpa-asr.tar.bz2')
+
+    inputs.files(part1, part2)
+    outputs.file(merged)
+
+    doLast {
+        if (!part1.exists() || !part2.exists()) {
+            throw new GradleException("ASR model parts not found: part1=${part1.exists()}, part2=${part2.exists()}")
+        }
+        logger.lifecycle("Merging ASR model: part1 + part2 → sherpa-asr.tar.bz2")
+        merged.bytes = part1.bytes + part2.bytes
+        logger.lifecycle("Merged ASR model: ${merged.length()} bytes")
+    }
+}
+
+tasks.matching { it.name.startsWith('merge') && it.name.endsWith('Assets') }.configureEach {
+    dependsOn mergeAsrModel
+}
+
 apply from: 'capacitor.build.gradle'
 
 try {
