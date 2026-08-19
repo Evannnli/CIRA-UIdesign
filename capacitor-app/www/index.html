@@ -543,6 +543,7 @@
   let wakePhase='idle';                 // idle / listen / think / speak
   let wakeCountdown=null;               // 聆听倒计时（超时无有效输入则自动消失）
   let wakeEmptyRetries=0;               // 连续空识别次数（防止无限重启识别）
+  let lastWakeTs=0;                     // 防抖：上次唤醒触发时间戳（native 层也有3s冷却，这里双保险）
 
   // 语音识别改由浏览器端 Web Speech API 完成（见 buildRecognizer，上方），不再用 PCM 采集 + VAD；
   // 本机 8787 冻结 Core 只收文字。
@@ -577,6 +578,10 @@
   }
 
   function triggerWake(){
+    // 防抖：3 秒内不重复触发（防止 native KWS 连续误触发）
+    var now=Date.now();
+    if(now-lastWakeTs<3000 && wakeActive){ return; }
+    lastWakeTs=now;
     if(wakeActive){ keepListening(); return; }
     wakeActive=true;
     document.body.classList.add('wake-on');   // 标记唤醒态：文字框浮于悬浮面板之上

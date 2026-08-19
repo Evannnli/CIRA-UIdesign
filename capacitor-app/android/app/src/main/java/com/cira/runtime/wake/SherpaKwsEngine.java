@@ -167,9 +167,9 @@ public class SherpaKwsEngine {
         config.setFeatConfig(featConfig);
         config.setModelConfig(modelConfig);
         config.setKeywordsFile(keywordsPath);
-        config.setKeywordsScore(1.5f);
-        config.setKeywordsThreshold(0.25f);
-        config.setNumTrailingBlanks(2);
+        config.setKeywordsScore(1.0f);        // 默认加权（过高会放大误触发）
+        config.setKeywordsThreshold(0.5f);    // 触发阈值（0.25 太灵敏，杂音也触发；0.5 只有清晰发音才触发）
+        config.setNumTrailingBlanks(1);       // 关键词后空白帧数（默认值即可）
         config.setMaxActivePaths(4);
 
         kws = new KeywordSpotter(null, config);
@@ -182,12 +182,11 @@ public class SherpaKwsEngine {
         // tokens 来自模型的 tokens.txt（声母/韵母+声调），由 sherpa-onnx-cli text2token 验证
         // ⚠️ 英文词（如 "cira"）无法转为 ppinyin token，模型只支持中文拼音
         String defaultKeywords =
-            // "你好西拉" (nǐ hǎo xī lā) — 主唤醒词
+            // "你好西拉" (nǐ hǎo xī lā) — 主唤醒词（4个音节，不易误触）
             "n ǐ h ǎo x ī l ā @你好西拉\n" +
-            // "西拉" (xī lā) — 简短唤醒
-            "x ī l ā @西拉\n" +
-            // "你好" (nǐ hǎo) — 通用唤醒
-            "n ǐ h ǎo @你好\n";
+            // "西拉" (xī lā) — 简短唤醒（2个音节）
+            "x ī l ā @西拉\n";
+        // 注意：不加"你好"（太短太常见，任何中文对话都可能误触发）
 
         File kwFile = new File(path);
         kwFile.getParentFile().mkdirs();

@@ -30,6 +30,8 @@ public class CiraForegroundService extends Service {
 
     private com.cira.runtime.wake.SherpaKwsEngine engine;
     private PowerManager.WakeLock wakeLock;
+    private volatile long lastWakeTime = 0; // 防抖：上次唤醒时间戳
+    private static final long WAKE_COOLDOWN_MS = 3000; // 冷却 3 秒，防止连续误触发
 
     @Override
     public void onCreate() {
@@ -71,6 +73,14 @@ public class CiraForegroundService extends Service {
     }
 
     private void onWake(String phrase) {
+        // 防抖：3 秒内不重复触发（KWS 低阈值下杂音可能连续触发）
+        long now = System.currentTimeMillis();
+        if (now - lastWakeTime < WAKE_COOLDOWN_MS) {
+            android.util.Log.i("CiraFgSvc", "唤醒冷却中，忽略: " + phrase);
+            return;
+        }
+        lastWakeTime = now;
+
         // 1) 通知 Web（native-bridge → window.CIRA.triggerWake）
         if (CiraRuntimePlugin.getInstance() != null) {
             CiraRuntimePlugin.getInstance().emitWakeword(phrase);
