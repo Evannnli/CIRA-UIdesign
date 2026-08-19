@@ -564,12 +564,12 @@
       }
     }, ms);
   }
-  function startWakeListening(){
+  function startWakeListening(timeoutMs){
     if(!wakeActive) return;
     wakeStatus.textContent='正在聆听…';
     wakeMic.textContent='对着手机说话试试';
-    // 初始倒计时（8秒内不说话则自动收起），用户说话时会被 onNativeInterim 取消
-    startWakeCountdown(8000);
+    // 倒计时：首次8秒，对话后回到聆听5秒。用户说话时被 onNativeInterim 取消
+    startWakeCountdown(timeoutMs || 5000);
     if(useNativeAsr){ CiraNative.startAsr(); return; } // 原生离线识别（唤醒态也走它）
     startRecognizer('voice');
   }
@@ -600,9 +600,9 @@
     if(a){
       a.currentTime=0;
       a.play().catch(()=>{});
-      a.addEventListener('ended', ()=>startWakeListening(), { once:true });
+      a.addEventListener('ended', ()=>startWakeListening(8000), { once:true });
       // 兜底：音频异常没触发 ended 时，1.2s 后也开麦
-      setTimeout(()=>{ if(wakeActive && !recognizing) startWakeListening(); }, 1200);
+      setTimeout(()=>{ if(wakeActive && !recognizing) startWakeListening(8000); }, 1200);
     } else {
       startWakeListening();
     }
