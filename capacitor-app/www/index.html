@@ -568,7 +568,8 @@
     if(!wakeActive) return;
     wakeStatus.textContent='正在聆听…';
     wakeMic.textContent='对着手机说话试试';
-    startWakeCountdown(8000);          // 8 秒倒计时，到点无输入则自动消失
+    // 初始倒计时（8秒内不说话则自动收起），用户说话时会被 onNativeInterim 取消
+    startWakeCountdown(8000);
     if(useNativeAsr){ CiraNative.startAsr(); return; } // 原生离线识别（唤醒态也走它）
     startRecognizer('voice');
   }
@@ -767,13 +768,18 @@
     onNativeTranscript: function(text){
       if(window.__ciraDbg) window.__ciraDbg('ASR final: ' + (text || ''));
       if(text && text.trim()) onSpeechFinal(text.trim());
+      // final 结果后，倒计时由 runTurnFromText（清除）→ backToListen（重启）接管，无需额外处理
     },
     // 原生离线识别中间结果 → 实时"正在听"反馈
     onNativeInterim: function(text){
       if(!text) return;
       if(window.__ciraDbg) window.__ciraDbg('ASR partial: ' + text);
-      if(wakeActive){ wakeStatus.textContent = '听到：「'+text+'」'; }
-      else { mainCaption.classList.add('show'); mcStatus.textContent='我在听…「'+text+'」'; }
+      if(wakeActive){
+        wakeStatus.textContent = '听到：「'+text+'」';
+        // 用户在说话，取消倒计时（重置倒计时）
+        clearTimeout(wakeCountdown);
+        wakeCountdown = null;
+      } else { mainCaption.classList.add('show'); mcStatus.textContent='我在听…「'+text+'」'; }
     }
   };
   // 状态切换统一回传原生（联动浮窗/前台保活）。轻量、异常安全。

@@ -8,10 +8,13 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.IBinder;
 import android.provider.Settings;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.WindowManager;
+import android.view.animation.AlphaAnimation;
+import android.view.animation.Animation;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -47,7 +50,10 @@ public class CiraOverlayService extends Service {
 
     private void show() {
         if (overlayView != null) return;
-        if (!Settings.canDrawOverlays(this)) return;
+        if (!Settings.canDrawOverlays(this)) {
+            Log.w("CiraOverlay", "SYSTEM_ALERT_WINDOW permission not granted");
+            return;
+        }
 
         wm = (WindowManager) getSystemService(WINDOW_SERVICE);
         WindowManager.LayoutParams params = new WindowManager.LayoutParams(
@@ -61,9 +67,9 @@ public class CiraOverlayService extends Service {
                 PixelFormat.TRANSLUCENT);
         params.gravity = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
         params.x = 0;
-        params.y = 140;
-        params.width = 220;
-        params.height = 220;
+        params.y = 200;  // 从底部上移，更居中
+        params.width = 280;  // 增加宽度
+        params.height = 280; // 增加高度
 
         overlayView = LayoutInflater.from(this).inflate(R.layout.overlay_window, null);
         WebView wv = overlayView.findViewById(R.id.overlay_web);
@@ -81,12 +87,32 @@ public class CiraOverlayService extends Service {
         wv.loadUrl(base);
 
         wm.addView(overlayView, params);
+        
+        // 添加淡入动画
+        AlphaAnimation fadeIn = new AlphaAnimation(0.0f, 1.0f);
+        fadeIn.setDuration(300);
+        overlayView.startAnimation(fadeIn);
+        Log.d("CiraOverlay", "Overlay shown");
     }
 
     private void hide() {
         if (overlayView != null && wm != null) {
-            wm.removeView(overlayView);
-            overlayView = null;
+            // 添加淡出动画
+            AlphaAnimation fadeOut = new AlphaAnimation(1.0f, 0.0f);
+            fadeOut.setDuration(200);
+            fadeOut.setAnimationListener(new Animation.AnimationListener() {
+                @Override
+                public void onAnimationStart(Animation animation) {}
+                @Override
+                public void onAnimationRepeat(Animation animation) {}
+                @Override
+                public void onAnimationEnd(Animation animation) {
+                    wm.removeView(overlayView);
+                    overlayView = null;
+                    Log.d("CiraOverlay", "Overlay hidden");
+                }
+            });
+            overlayView.startAnimation(fadeOut);
         }
     }
 
