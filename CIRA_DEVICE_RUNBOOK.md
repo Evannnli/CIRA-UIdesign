@@ -155,16 +155,50 @@
 
 ---
 
-## 2. 部署 Core 上云 `[推断 · 待做]`
+## 2. 部署 Core 上云 `[已实现 · 未在真服务器跑过]`
 
-Core 现在是 Mac 上的 `engine/server.py`（Python 标准库，无第三方依赖，只有 LLM/TTS 走云 API），搬迁成本低：
+**已在 Core 仓库（`Evannnli/CIRA-`）把这一步做成一条命令。** 2026-09-28 完成，详见
+`deploy/DEPLOY.md`。
 
-1. 装 Python 3.10+ 与仓库依赖（`deploy/requirements.txt`）
-2. 上传仓库、写云端 `.env`（**新的大模型 key**、火山 TTS 的 appid/access_key）
-3. 用 systemd 常驻（仓库已有 `deploy/launchd/` 的 Mac 版，Linux 需换成 systemd unit）`[推断]`
-4. 验证：`curl http://<公网IP>:8787/api/status` 与 `/v1/chat/completions`
+### 一条命令
 
-> 注意：Core 默认监听 8787，要在防火墙放行。**不要把 Core 直接暴露给公网不带任何保护**——它没有鉴权，谁都能调、烧你的 key 额度。至少：改非标端口 + 建议加一层简单的 header token 校验（小智服务端的 LLM 配置支持自定义 header）。`[推断]`
+```bash
+cd /Users/evanli/WorkBuddy/2026-07-28-21-39-04
+./deploy/ship.sh ubuntu@<服务器IP>
+```
+
+做完自动：打包本地代码（936KB）→ 上传 → 装 Python/建 venv/装依赖 → 建非 root 运行账号
+→ 建持久数据目录并**装入本地 81 条长期记忆**（仅首次）→ 生成 `.env` → 装 systemd 服务并自启
+→ 回读 `/api/status` 核对。
+
+前置：配一次 SSH 免密（`ssh-copy-id -i ~/.ssh/id_ed25519.pub ubuntu@<IP>`）。
+没配通的话脚本会直接打印公钥内容和命令，也可能走手动路线（见 `deploy/DEPLOY.md` §2）。
+
+### 三条已经替你处理好的事（原计划里本来是坑）
+
+| 项 | 处理方式 | 为什么重要 |
+|---|---|---|
+| **Core 无鉴权** | 默认只绑 **`127.0.0.1`**，不对公网开放 | 设备链路是「开发板 → 小智服务端 → Core」，小智服务端与 Core **同机**，走 localhost 就够。**8787 不要加进防火墙规则** |
+| **要对外时的鉴权** | 新增 `CIRA_API_TOKEN` 闸门（留空=关闭，不影响本地开发）；改 `0.0.0.0` 时必须同时设它 | 否则任何人都能烧掉模型额度并读取家庭记忆 |
+| **记忆被重新部署覆盖** | 记忆改存 **`/var/lib/cira/family_memory.json`**（代码目录之外），且只在目标不存在时才装种子 | 81 条长期记忆是演示最值钱的资产，不能被 `git pull` 冲掉 |
+
+### 验证
+
+```bash
+# 服务器上
+curl -s http://127.0.0.1:8787/api/status     # 期望 provider=openai、memories=81
+
+# Mac 上做完整冒烟（真实调用大模型 + TTS，几分钱；上板前务必跑）
+ssh -N -L 8787:127.0.0.1:8787 ubuntu@<IP>    # 一个终端挂着
+./deploy/smoke_test.sh                        # 另一个终端
+```
+冒烟覆盖 5 项：服务状态 / 设备接口模型列表 / 非流式对话 / **流式对话** / TTS 音频。
+**全绿才说明链路健康。**
+
+> ⚠️ 诚实标注：`bootstrap.sh` 的全流程**还没在真服务器上跑过一次**（本机没有容器/虚拟机，
+> 没法预演 Linux 环境）。已在别处验证过的部分：全新 venv 只装 `deploy/requirements.txt`
+> 服务能正常起 + 真实对话/流式通过；鉴权闸门、只绑本机、记忆路径可配均有回归测试；
+> 打包内容核实过。真机上出问题就按 `deploy/DEPLOY.md` §7 排查——脚本每步都有独立输出。
 
 ---
 
